@@ -1,0 +1,50 @@
+{
+  "useExistingStack": false,
+  "backend": "auto",
+  "requireHashes": true,
+  "enginePacks": [
+    {
+      "rid": "win-x64",
+      "backend": "cpu",
+      "directory": "engines/llm",
+      "url": "https://YOUR-DOWNLOAD-HOST/resone-llm-win-x64-cpu.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256"
+    },
+    {
+      "rid": "win-x64",
+      "backend": "cpu",
+      "directory": "engines/asr",
+      "url": "https://YOUR-DOWNLOAD-HOST/resone-asr-win-x64-cpu.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256"
+    }
+  ],
+  "models": [
+    {
+      "path": "models/llm/gemma-4-E4B-it-Q6_K.gguf",
+      "url": "https://YOUR-DOWNLOAD-HOST/gemma-4-E4B-it-Q6_K.gguf",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "enabled": true
+    },
+    {
+      "path": "models/asr/ggml-large-v3-turbo.bin",
+      "url": "https://YOUR-DOWNLOAD-HOST/ggml-large-v3-turbo.bin",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "enabled": true
+    }
+  ],
+  "services": [
+    {
+      "name": "Whisper",
+      "executable": "engines/asr/whisper-server.exe",
+      "arguments": [
+        "-m",
+        "{root}/models/asr/ggml-large-v3-turbo.bin",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000"
+      ],
+      "enabled": true
+    }
+  ]
+}

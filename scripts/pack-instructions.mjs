@@ -1,0 +1,10 @@
+import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import {dirname,join} from 'node:path';
+import {randomBytes,createCipheriv} from 'node:crypto';
+const [root,out]=process.argv.slice(2);if(!root||!out)throw Error('Usage: node pack-instructions.mjs content-dir output.cs');
+const names=['music-composition.json','composition-tips.md','resonator_api_v0.1.md','interval_emotion_field_guide.md','anchored_harmonic_divergence.md'];
+const content=Object.fromEntries(names.map(n=>[n,readFileSync(join(root,n),'utf8')]));JSON.parse(content['music-composition.json']);
+const key=randomBytes(32),iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,iv);
+const data=Buffer.concat([cipher.update(JSON.stringify(content),'utf8'),cipher.final()]);
+mkdirSync(dirname(out),{recursive:true});
+writeFileSync(out,`namespace Wds.Resone.Api; internal static class PackedInstructions { internal const string Key="${key.toString('base64')}"; internal const string Nonce="${iv.toString('base64')}"; internal const string Tag="${cipher.getAuthTag().toString('base64')}"; internal const string Data="${data.toString('base64')}"; }`);

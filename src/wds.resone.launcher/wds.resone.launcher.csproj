@@ -1,0 +1,27 @@
+<?xml version="1.0" ?>
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <PublishAot>true</PublishAot>
+    <ApplicationIcon>../wds.resone.ui/resources/Resone.ico</ApplicationIcon>
+    <AssemblyName>wds.resone.launcher</AssemblyName>
+    <OutputType Condition="'$(CustomerRelease)' == 'true' and $([MSBuild]::IsOSPlatform('Windows'))">WinExe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="../wds.resone.ui/resources/Resone.ico" Link="Resone.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <ProjectReference Include="../wds.resone.api/wds.resone.api.csproj"/>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="../../assets/**/*" Exclude="../../assets/Instructions/**/*" Link="assets/%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../../config/*.json" Link="config/%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(CustomerRelease)' != 'true'">
+    <Content Include="../../assets/Instructions/**/*" Link="assets/Instructions/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <PropertyGroup Condition="'$(CustomerRelease)' == 'true'"><DefineConstants>$(DefineConstants);RESONE_CUSTOMER_RELEASE</DefineConstants></PropertyGroup>
+  <ItemGroup Condition="'$(CustomerRelease)' == 'true'"><EmbeddedResource Include="$(LicensePublicKeyFile)" LogicalName="Resone.LicensePublicKey" /></ItemGroup>
+  <Target Name="RequireLicensePublicKey" BeforeTargets="PrepareForBuild" Condition="'$(CustomerRelease)' == 'true'">
+    <Error Condition="!Exists('$(LicensePublicKeyFile)')" Text="CustomerRelease requires LicensePublicKeyFile (public P-256 JWK only)." />
+  </Target>
+</Project>

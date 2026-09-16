@@ -1,0 +1,12 @@
+# Third-party components
+
+- **GeneralUser GS 2.0.3** by S. Christian Collins, from https://github.com/mrbumpy409/GeneralUser-GS, commit `684543d5e5efaef08d02be50dcda8d552478fa60`. The included SoundFont is unmodified. Its full license and documentation are in `assets/GeneralUser-GS-LICENSE.txt` and `assets/GeneralUser-GS-README.md`. Retain both when distributing. The actual enumerated bank has 287 entries in the tested FluidSynth build.
+- **iPlug2**, https://github.com/iPlug2/iPlug2, commit `d54f69050f517e43b941d88c2a170f0a840b9ee4`. Fetched by the Windows build script. Resone's resource IDs, Windows resource dialog/menu, and initial icon are adapted from its IPlugWebUI example. See the included iPlug2 license. Its dependencies carry their own licenses, including the bundled ASIO SDK.
+- **VST3 SDK 3.8.0**, https://github.com/steinbergmedia/vst3sdk, commit `9fad9770f2ae8542ab1a548a68c1ad1ac690abe0`. Fetched with its required submodules. Retain the SDK license. VST is a trademark of Steinberg Media Technologies GmbH.
+- **FluidSynth**, https://github.com/FluidSynth/fluidsynth, dynamically linked. Built through vcpkg at `1577f17ee57f42a0ef6d75bbb82cb37d0b76d7e8`. LGPL-2.1-or-later; keep the DLL replaceable and distribute applicable license/source or source offer for your shipped build. Build script copies dependency copyright files. The Linux audio check used FluidSynth 2.2.5; the Windows build uses the version pinned by that vcpkg checkout.
+- **nlohmann/json**, vendored single header from the pinned iPlug2 tree, MIT; copyright/license retained in its header.
+- **WebView2 SDK** 1.0.2903.40 and **WIL** v1.0.240803.1, fetched by the pinned iPlug2 CMake files. WebView2 Evergreen Runtime is needed on the user's PC.
+- **.NET 9**, NativeAOT build/runtime components are governed by their Microsoft/.NET licenses.
+- **llama.cpp, whisper.cpp, qwentts.cpp and model weights** are not redistributed in this source bundle. Reuse your Six Stars engine packs or supply compatible builds and preserve their licenses. Model download URLs are inherited from the supplied project; model-specific licensing still applies.
+
+The user's Resone logo is in `assets/resone-logo.png`. Six Stars and Resonator source were supplied by the user; this extraction does not assign a new license to those files.

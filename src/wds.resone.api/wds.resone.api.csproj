@@ -1,0 +1,19 @@
+<?xml version="1.0" ?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <AssemblyName>wds.resone.api</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../wds.resone.resonator/wds.resone.resonator.csproj"/>
+  </ItemGroup>
+  <PropertyGroup Condition="'$(CustomerRelease)' == 'true'">
+    <DefineConstants>$(DefineConstants);RESONE_CUSTOMER_RELEASE</DefineConstants>
+  </PropertyGroup>
+  <Target Name="PackResoneInstructions" BeforeTargets="CoreCompile" Condition="'$(CustomerRelease)' == 'true'">
+    <Exec Command="node &quot;$(MSBuildProjectDirectory)/../../scripts/pack-instructions.mjs&quot; &quot;$(MSBuildProjectDirectory)/../../assets/Instructions/Music&quot; &quot;$(IntermediateOutputPath)PackedInstructions.g.cs&quot;" />
+    <ItemGroup><Compile Include="$(IntermediateOutputPath)PackedInstructions.g.cs" /></ItemGroup>
+  </Target>
+</Project>

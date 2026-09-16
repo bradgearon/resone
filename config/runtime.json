@@ -1,0 +1,79 @@
+{
+  "useExistingStack": true,
+  "models": [
+    {
+      "path": "models/llm/gemma-4-E4B-it-Q6_K.gguf",
+      "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q6_K.gguf",
+      "enabled": true
+    },
+    {
+      "path": "models/asr/ggml-large-v3-turbo.bin",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+      "enabled": true
+    },
+    {
+      "path": "models/tts/qwen-talker-0.6b-base-Q8_0.gguf",
+      "url": "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-talker-0.6b-base-Q8_0.gguf",
+      "enabled": false
+    },
+    {
+      "path": "models/tts/qwen-tokenizer-12hz-Q8_0.gguf",
+      "url": "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-tokenizer-12hz-Q8_0.gguf",
+      "enabled": false
+    }
+  ],
+  "services": [
+    {
+      "name": "LLM",
+      "executable": "engines/llm/llama-cpp-dynamic-win-x64/llama-server.exe",
+      "arguments": [
+        "-m",
+        "{root}/models/llm/gemma-4-E4B-it-Q6_K.gguf",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8080",
+        "-c",
+        "16384",
+        "-ngl",
+        "99",
+        "--alias",
+        "local-model",
+        "--jinja",
+        "--flash-attn",
+        "on"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "Whisper",
+      "executable": "engines/asr/whispercpp-nvidia-win-x64/whisper-server.exe",
+      "arguments": [
+        "-m",
+        "{root}/models/asr/ggml-large-v3-turbo.bin",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--language",
+        "en"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "Qwen TTS",
+      "executable": "engines/tts/qwenttscpp-nvidia-win-x64/tts-server.exe",
+      "arguments": [
+        "--model",
+        "{root}/models/tts/qwen-talker-0.6b-base-Q8_0.gguf",
+        "--codec",
+        "{root}/models/tts/qwen-tokenizer-12hz-Q8_0.gguf",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8101"
+      ],
+      "enabled": false
+    }
+  ]
+}
