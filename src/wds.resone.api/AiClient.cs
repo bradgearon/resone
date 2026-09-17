@@ -14,6 +14,7 @@ public interface ILocalChatModelClient
 public sealed class InstructionLibrary(string root)
 {
     public MusicCompositionInstructions LoadMusicCompositionInstructions() => MusicCompositionInstructions.Load(root);
+    public string LoadIntervalEmotionGuide() => InstructionContent.Read(root, "interval_emotion_field_guide.md");
 }
 
 /// <summary>Scoped extraction of the Six Stars OpenAI SSE flow. Ignores reasoning deltas.</summary>

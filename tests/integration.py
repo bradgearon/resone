@@ -1,8 +1,8 @@
 """Actual NativeAOT C ABI -> WebSocket host -> deterministic fake inference.
 Usage: python tests/integration.py <dotnet> <launcher.dll> <api.so> <Resone root>
-Fake inference tests transport/repair; it is not a model quality benchmark.
+Fake inference tests transport/generation; it is not a model quality benchmark.
 """
-import asyncio, ctypes, json, os, pathlib, sys, tempfile, shutil, base64
+import asyncio, ctypes, json, os, pathlib, sys, tempfile, shutil, base64, re
 from aiohttp import web
 
 async def main():
@@ -13,8 +13,17 @@ async def main():
         if 'cancel-test' in json.dumps(body):
             await asyncio.sleep(0.5)
             if req.transport is None or req.transport.is_closing(): return web.Response(status=499)
-        repair=any('Fix ALL errors' in str(m.get('content')) for m in body['messages'])
-        text='tempo=120 4/4 key=C | C4 E4 G4 C5 |' if repair else 'tempo=120 4/4 key=C major | C4 E4 G4 C5 |'
+        all_text=json.dumps(body)
+        if "silent musical narrative planner" in all_text.lower():
+            text='PHRASE 1 — bars 1-8\nFeeling: happy\nRequired interval gestures: Major 3rd Ascending\nContinuation: contentment'
+        else:
+            lane='melody'
+            for m in body.get('messages',[]):
+                match=re.search(r'\"laneId\"\s*:\s*\"([^\"]+)\"', str(m.get('content','')))
+                if match:
+                    lane=match.group(1)
+                    break
+            text=f'track={lane} tempo=120 4/4 | C4 E4 G4 C5 |'
         out=web.StreamResponse(headers={'Content-Type':'text/event-stream'});await out.prepare(req)
         for part in [text[:15],text[15:]]:await out.write(('data: '+json.dumps({'choices':[{'delta':{'content':part}}]})+'\n\n').encode())
         await out.write(b'data: [DONE]\n\n');return out
@@ -66,7 +75,7 @@ async def main():
         assert [c['sequence'] for c in chunks]==[0,1,2];assert sum(len(base64.b64decode(c['pcm'])) for c in chunks)==24014
         send('compose',{'project':project,'laneId':'melody','description':'cancel-test'},'x');await until('status','x');send('cancel',{},'x');await until('cancelled','x')
         send('render',{'notation':'tempo=96 4/4 key=Cm C3, Eb3, G3, C4::'},'after');await until('midi','after')
-        print('PASS: NativeAOT ABI, WebSocket compose/repair, flexible duration, MIDI export/render, voice transcription, ordered PCM streaming, cancellation and recovery')
+        print('PASS: NativeAOT ABI, WebSocket compose, flexible duration, MIDI export/render, voice transcription, ordered PCM streaming, cancellation and recovery')
     finally:
         if handle:await asyncio.to_thread(lib.resone_close,handle)
         proc.terminate();await proc.wait();await runner.cleanup();shutil.rmtree(temp)

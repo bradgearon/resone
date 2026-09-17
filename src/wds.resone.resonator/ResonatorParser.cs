@@ -317,7 +317,20 @@ public sealed partial class ResonatorParser
 
     private bool TryDynamic(string token)
     {
-        int? velocity = token.ToLowerInvariant() switch
+        string dynamic = token.Trim().ToLowerInvariant();
+        // Dynamics are canonically bare tokens (pp p mp mf f ff), but accept a few
+        // common model-generated key/value spellings so formatting cannot turn a
+        // dynamic marking into an invalid pitch such as "p=mf".
+        foreach (string prefix in new[] { "p=", "dyn=", "dynamic=", "dynamics=" })
+        {
+            if (dynamic.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                dynamic = dynamic[prefix.Length..];
+                break;
+            }
+        }
+
+        int? velocity = dynamic switch
         {
             "pp" => 42,
             "p" => 56,
@@ -570,6 +583,47 @@ public sealed partial class ResonatorParser
                 round++;
             if (c == ')')
                 round--;
+            // Rest/hold separators do not require surrounding whitespace. This makes
+            // C5_, C5 _, C5- and C5 - equivalent at the event-stream level while
+            // leaving negative octaves, cents (C#-30c), offsets (@-1/16q), and
+            // key/value metadata untouched.
+            if (square == 0 && round == 0 && c == '_' && !sb.ToString().Contains('='))
+            {
+                Flush();
+                string rest = "_";
+                if (i + 1 < expanded.Length && expanded[i + 1] is ',' or '.')
+                    rest += expanded[++i];
+                else if (i + 1 < expanded.Length && expanded[i + 1] == ':')
+                {
+                    rest += expanded[++i];
+                    if (i + 1 < expanded.Length && expanded[i + 1] == ':')
+                        rest += expanded[++i];
+                }
+                tokens.Add(rest);
+                continue;
+            }
+
+            if (square == 0 && round == 0 && c == '-' && !sb.ToString().Contains('='))
+            {
+                bool trailingHold = i + 1 >= expanded.Length || char.IsWhiteSpace(expanded[i + 1]) ||
+                    expanded[i + 1] is '|' or '/' or ',' or '.' or ':' or '_';
+                if (trailingHold)
+                {
+                    Flush();
+                    string hold = "-";
+                    if (i + 1 < expanded.Length && expanded[i + 1] is ',' or '.')
+                        hold += expanded[++i];
+                    else if (i + 1 < expanded.Length && expanded[i + 1] == ':')
+                    {
+                        hold += expanded[++i];
+                        if (i + 1 < expanded.Length && expanded[i + 1] == ':')
+                            hold += expanded[++i];
+                    }
+                    tokens.Add(hold);
+                    continue;
+                }
+            }
+
             if (square == 0 && round == 0 && char.IsWhiteSpace(c))
             {
                 Flush();

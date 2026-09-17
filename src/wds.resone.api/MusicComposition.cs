@@ -37,7 +37,6 @@ namespace Wds.Resone.Api.Music
         public string SystemPrompt { get; set; } = "";
         public string ExecutableProfile { get; set; } = "";
         public string ArrangementInstructions { get; set; } = "";
-        public string ArrangementRepairInstructions { get; set; } = "";
         public string References { get; private set; } = "";
 
         public static MusicCompositionInstructions Load(string contentRoot)
@@ -71,7 +70,7 @@ namespace Wds.Resone.Api.Music
     {
         public IReadOnlyList<string> Errors { get; }
 
-        public MusicGenerationException(IReadOnlyList<string> errors) : base("The model did not produce valid Resonator notation after one repair attempt.\n" + string.Join("\n", errors))
+        public MusicGenerationException(IReadOnlyList<string> errors) : base("The model did not produce valid Resonator notation.\n" + string.Join("\n", errors))
         {
             Errors = errors;
         }
@@ -92,38 +91,38 @@ namespace Wds.Resone.Api.Music
         {
             ValidateRequest(request);
             var instructions = _library.LoadMusicCompositionInstructions();
+            string narrative = await MusicNarrativePlanner.CreateAsync(
+                _model,
+                request.Description,
+                _library.LoadIntervalEmotionGuide(),
+                request.UseAhd,
+                request.Bars,
+                request.Tempo,
+                request.Meter,
+                token).ConfigureAwait(false);
+            string composerRequest = MusicNarrativePlanner.AppendNarrativePlan(
+                JsonSerializer.Serialize(request, ResoneJson.Default.MusicCompositionRequest) + "\n" + BuildDurationInstruction(request),
+                narrative);
             var messages = new List<ChatMessage>
             {
                 new ChatMessage("system", instructions.SystemPrompt + "\n" + instructions.References + "\nEXECUTABLE OUTPUT CONTRACT (overrides optional reference syntax):\n" + instructions.ExecutableProfile + "\nTIMING CONTRACT: | separators are optional visual markers. Ignore any earlier requirement to emit or fill explicit | delimited bars. Derive the timeline from event durations. Bars is a target length, not an exact output constraint. Prefer complete musical phrases. A shorter or longer valid melody is acceptable; playback preserves every note and fills an incomplete final measure with rests. Events may cross implied bar boundaries; / and // add no time."),
-                new ChatMessage("user", JsonSerializer.Serialize(request, ResoneJson.Default.MusicCompositionRequest) + "\n" + BuildDurationInstruction(request))
+                new ChatMessage("user", composerRequest)
             };
-            IReadOnlyList<string> errors = Array.Empty<string>();
-            for (int attempt = 1; attempt <= 2; attempt++)
+            token.ThrowIfCancellationRequested();
+            string notation = (await _model.CompleteTextStreamingAsync(messages, 8192, "MusicComposition", null, token).ConfigureAwait(false)).Trim();
+            token.ThrowIfCancellationRequested();
+            IReadOnlyList<string> errors = ResonatorNotationValidator.Validate(notation, request);
+            if (errors.Count != 0)
+                throw new MusicGenerationException(errors);
+
+            notation = ResonatorNotationValidator.CompleteFinalMeasure(notation, request, out int actualBars);
+            return new MusicCompositionResult
             {
-                token.ThrowIfCancellationRequested();
-                string notation = (await _model.CompleteTextStreamingAsync(messages, 8192, "MusicComposition" + (attempt == 1 ? "" : ".Repair"), null, token).ConfigureAwait(false)).Trim();
-                token.ThrowIfCancellationRequested();
-                errors = ResonatorNotationValidator.Validate(notation, request);
-                if (errors.Count == 0)
-                {
-                    notation = ResonatorNotationValidator.CompleteFinalMeasure(notation, request, out int actualBars);
-                    return new MusicCompositionResult
-                    {
-                        Notation = notation,
-                        ActualBars = actualBars,
-                        Attempts = attempt,
-                        InstructionVersion = instructions.Version
-                    };
-                }
-
-                if (attempt == 1)
-                {
-                    messages.Add(new ChatMessage("assistant", notation.Length <= 65536 ? notation : notation.Substring(0, 65536)));
-                    messages.Add(new ChatMessage("user", "Replace the entire score, preserving the requested musical journey. Fix ALL errors below together. Use the requested tempo and meter. Preserve the generated melody and its length; do not trim or rewrite it merely to match the requested bar count. Bar separators | are optional and do not affect timing. Return only the complete notation, using resonator_api_v0.1.md as the sole syntax reference.\n" + string.Join("\n", errors)));
-                }
-            }
-
-            throw new MusicGenerationException(errors);
+                Notation = notation,
+                ActualBars = actualBars,
+                Attempts = 1,
+                InstructionVersion = instructions.Version
+            };
         }
 
         public static string BuildDurationInstruction(MusicCompositionRequest request)

@@ -9,6 +9,45 @@
 #include <mutex>
 #include <shlobj.h>
 namespace resone {
+// Load a Win32 icon from the module that actually contains Resone's code.
+// This matters for VST3: GetModuleHandle(nullptr) returns the DAW executable,
+// not the plug-in DLL, so resource lookups against nullptr can silently fall
+// back to the host/default icon.
+inline HMODULE currentModule() {
+    HMODULE module{};
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&currentModule), &module);
+    return module;
+}
+inline bool setWindowIcon(HWND window, int resourceId) {
+    if (!window || !IsWindow(window))
+        return false;
+    const HMODULE module = currentModule();
+    if (!module)
+        return false;
+
+    const auto load = [&](int width, int height) -> HICON {
+        return reinterpret_cast<HICON>(LoadImageW(module, MAKEINTRESOURCEW(resourceId), IMAGE_ICON,
+                                                  width, height, LR_DEFAULTCOLOR | LR_SHARED));
+    };
+    HICON smallIcon = load(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+    HICON largeIcon = load(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+    if (!smallIcon && !largeIcon)
+        return false;
+    if (!smallIcon)
+        smallIcon = largeIcon;
+    if (!largeIcon)
+        largeIcon = smallIcon;
+
+    // WM_SETICON controls the caption icon and the icon Windows uses for the
+    // taskbar button. Updating the class icons as well prevents later window
+    // recreation/theme changes from falling back to IDI_APPLICATION.
+    SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(smallIcon));
+    SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(largeIcon));
+    SetClassLongPtrW(window, GCLP_HICONSM, reinterpret_cast<LONG_PTR>(smallIcon));
+    SetClassLongPtrW(window, GCLP_HICON, reinterpret_cast<LONG_PTR>(largeIcon));
+    return true;
+}
 inline std::filesystem::path home() {
     wchar_t value[32768];
     auto n = GetEnvironmentVariableW(L"RESONE_HOME", value, 32768);
@@ -26,6 +65,56 @@ inline std::filesystem::path home() {
     p = std::filesystem::path(local) / "Wds/Resone";
     CoTaskMemFree(local);
     return p;
+}
+inline std::string utf8Path(const std::filesystem::path &path) {
+    auto wide = std::filesystem::absolute(path).wstring();
+    if (wide.empty())
+        return {};
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(),
+                                         static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+    if (size <= 0)
+        throw std::runtime_error("Could not convert the Resone UI path to UTF-8");
+    std::string value(static_cast<size_t>(size), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), static_cast<int>(wide.size()),
+                            value.data(), size, nullptr, nullptr) != size)
+        throw std::runtime_error("Could not convert the Resone UI path to UTF-8");
+    return value;
+}
+inline std::filesystem::path webIndex(const std::filesystem::path &root) {
+    std::vector<std::filesystem::path> candidates;
+    candidates.push_back(root / L"web" / L"index.html");
+
+    wchar_t modulePath[32768]{};
+    HMODULE module{};
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&webIndex), &module) &&
+        GetModuleFileNameW(module, modulePath, 32768)) {
+        auto cursor = std::filesystem::path(modulePath).parent_path();
+        for (int i = 0; i < 6 && !cursor.empty(); ++i) {
+            candidates.push_back(cursor / L"web" / L"index.html");
+            candidates.push_back(cursor / L"src" / L"wds.resone.ui" / L"resources" / L"web" / L"index.html");
+            cursor = cursor.parent_path();
+        }
+    }
+
+    PWSTR local{};
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) {
+        candidates.push_back(std::filesystem::path(local) / L"Wds" / L"Resone" / L"web" / L"index.html");
+        CoTaskMemFree(local);
+    }
+
+    std::error_code ec;
+    for (auto &candidate : candidates) {
+        auto absolute = std::filesystem::absolute(candidate, ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (std::filesystem::is_regular_file(absolute, ec) && !ec)
+            return absolute;
+        ec.clear();
+    }
+    return {};
 }
 inline std::filesystem::path preferences() {
     PWSTR local{};

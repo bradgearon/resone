@@ -5,7 +5,7 @@ internal sealed class TrayIcon(Action open,Func<Task> toggle,Action exit):IDispo
 {
  private Thread? thread;private nint window;private readonly string className="Wds.Resone.Tray."+Environment.ProcessId;
  private WndProc? callback;
- public void Status(string text){if(window==0)return;var data=new Notify{size=(uint)Marshal.SizeOf<Notify>(),window=window,id=1,flags=0x10|4,tip=text.Length>127?text[..127]:text,info=text.Length>255?text[..255]:text,title="Resone",infoFlags=1};Shell_NotifyIconW(1,ref data);}
+ public void Status(string text){if(window==0)return;var tip=text.Length>127?text[..127]:text;var data=new Notify{size=(uint)Marshal.SizeOf<Notify>(),window=window,id=1,flags=4,tip=tip,info="",title=""};Shell_NotifyIconW(1,ref data);}
  public void Start(){if(!OperatingSystem.IsWindows())return;thread=new Thread(Run){IsBackground=true,Name="Resone tray"};thread.SetApartmentState(ApartmentState.STA);thread.Start();}
  private void Run(){
   callback=Proc;var wc=new WindowClass{proc=callback,instance=GetModuleHandle(null),name=className};RegisterClassW(ref wc);

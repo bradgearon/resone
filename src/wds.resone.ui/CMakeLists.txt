@@ -15,6 +15,17 @@ iplug_add_plugin(Resone
  SOURCES Resone.cpp Resone.h ../../native/src/AudioEngine.cpp resources/resource.h
  WEB_RESOURCES resources/web/index.html resources/web/style.css resources/web/app.js resources/web/logo.png
  UI WEBVIEW FORMATS APP VST3)
+
+# iPlug2's CMake APP target automatically compiles resources/main.rc on Windows,
+# but its VST3 target does not. Explicitly attach the same resource script to
+# the VST3 module so Windows can see Resone.ico (IDI_ICON1) in the actual plug-in.
+if(WIN32)
+ set(RESONE_WIN_RESOURCE "${CMAKE_CURRENT_SOURCE_DIR}/resources/main.rc")
+ target_sources(Resone-vst3 PRIVATE "${RESONE_WIN_RESOURCE}")
+ set_source_files_properties("${RESONE_WIN_RESOURCE}" PROPERTIES
+  COMPILE_FLAGS "/I\"${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts\" /I\"${CMAKE_CURRENT_SOURCE_DIR}/resources/img\" /I\"${CMAKE_CURRENT_SOURCE_DIR}/resources\"")
+endif()
+
 foreach(target Resone-app Resone-vst3)
  target_include_directories(${target} PRIVATE ../../native/include ../../native/vendor)
  # iPlug2/WDL and RtAudio/ASIO depend on the shell, common-dialog and

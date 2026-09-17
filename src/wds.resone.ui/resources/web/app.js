@@ -501,17 +501,13 @@ function render() {
         drag.onclick = e => e.stopPropagation();
         drag.onpointerdown = e => {
             if (e.button !== 0 || pending || !l.notes.length) return;
-            e.preventDefault(); e.stopPropagation();
-            const x=e.clientX, y=e.clientY;
-            const cleanup=()=>{document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',cleanup);document.removeEventListener('pointercancel',cleanup);};
-            const move=event=>{
-                if(!(event.buttons & 1)){cleanup();return;}
-                if(Math.hypot(event.clientX-x,event.clientY-y)<5)return;
-                cleanup();send('dragMidi',{laneId:l.id,project:clone(song)});
-            };
-            document.addEventListener('pointermove',move);
-            document.addEventListener('pointerup',cleanup);
-            document.addEventListener('pointercancel',cleanup);
+            // Start the native OLE drag while the mouse button is definitely still down.
+            // Waiting for a later pointermove can let WebView2 consume/release capture before
+            // Windows receives the file drag, which results in no file cursor at all.
+            e.preventDefault();
+            e.stopPropagation();
+            status('Dragging ' + l.name + ' MIDI…');
+            send('dragMidi', {laneId : l.id, project : clone(song)});
         };
         out.append(g, t, drag);
         out.onclick = () => {
@@ -771,6 +767,9 @@ function receive(j) {
         pending = null;
         busy();
         status('MIDI export complete.');
+        break;
+    case 'midiDragFinished':
+        status('Ready.');
         break;
     case 'transport':
         transport = p.state;

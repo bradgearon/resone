@@ -1,4 +1,5 @@
 #include "Resone.h"
+#include "resources/resource.h"
 #include "MidiDrag.hpp"
 #include "IPlug_include_in_plug_src.h"
 using resone::Json;
@@ -36,8 +37,16 @@ Resone::Resone(const iplug::InstanceInfo &info)
     mEditorInitFunc = [this] {
         ready_ = false;
         dispatcher_->attach();
-        auto index = (home_ / "web/index.html").string();
-        LoadFile(index.c_str(), nullptr);
+        const auto index = resone::webIndex(home_);
+        if (index.empty()) {
+            LoadHTML("<html><body style=\"font-family:sans-serif;background:#16151a;color:#eee;padding:24px\">"
+                     "<h2>Resone UI files were not found.</h2>"
+                     "<p>Re-run the Resone build/install so the <code>web</code> folder is staged beside the launcher.</p>"
+                     "</body></html>");
+        } else {
+            const auto path = resone::utf8Path(index);
+            LoadFile(path.c_str());
+        }
         EnableScroll(false);
     };
 }
@@ -49,9 +58,32 @@ Resone::~Resone() {
 }
 void* Resone::OpenWindow(void* parent) {
     editorParent_ = parent;
+    const HWND editorWindow = static_cast<HWND>(parent);
+
+    // iPlug2 creates the Win32 window, but it does not reliably attach the
+    // plug-in's icon resource to that HWND. Do it explicitly so the caption
+    // and taskbar use Resone instead of the generic application icon.
+    resone::setWindowIcon(editorWindow, IDI_ICON1);
+#ifdef APP_API
+    // In the standalone build the HWND handed to the editor may be a child of
+    // the actual top-level frame. The taskbar button belongs to that root HWND.
+    // Apply the same icon there as well.
+    if (HWND root = GetAncestor(editorWindow, GA_ROOT); root && root != editorWindow)
+        resone::setWindowIcon(root, IDI_ICON1);
+#endif
+
     auto view = iplug::WebViewEditorDelegate::OpenWindow(parent);
+
+    // Some hosts/framework paths recreate or subclass the editor HWND while
+    // opening the WebView. Reassert the icon after OpenWindow as a safeguard.
+    resone::setWindowIcon(editorWindow, IDI_ICON1);
+#ifdef APP_API
+    if (HWND root = GetAncestor(editorWindow, GA_ROOT); root && root != editorWindow)
+        resone::setWindowIcon(root, IDI_ICON1);
+#endif
+
     RECT client{};
-    if (GetClientRect(static_cast<HWND>(parent), &client))
+    if (GetClientRect(editorWindow, &client))
         OnParentWindowResize(client.right, client.bottom);
     return view;
 }
@@ -161,6 +193,7 @@ bool Resone::OnMessage(int tag, int, int size, const void *data) {
             connect();
         } else if (op == "dragMidi") {
             resone::dragLane(p.at("project"),p.at("laneId").get<std::string>());
+            emit({{"op", "midiDragFinished"}});
         } else if (op == "play") {
             project_ = p;
             audio_->play(resone::parseSong(p));

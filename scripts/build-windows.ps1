@@ -20,6 +20,58 @@ if ($CustomerRelease) {
   foreach ($Dir in @('build/api','build/launcher')) { if (Test-Path "$Root/$Dir") { Remove-Item "$Root/$Dir" -Recurse -Force } }
 }
 function Run([string]$Exe, [string[]]$Arguments) { & $Exe @Arguments; if ($LASTEXITCODE -ne 0) { throw "$Exe failed ($LASTEXITCODE)" } }
+function Test-WindowsIconResource([string]$BinaryPath, [int]$ResourceId = 40003) {
+  if (!(Test-Path $BinaryPath -PathType Leaf)) { return $false }
+  if (-not ('Resone.NativeResourceCheckV2' -as [type])) {
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+namespace Resone {
+  public static class NativeResourceCheckV2 {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr LoadLibraryExW(string lpFileName, IntPtr hFile, uint dwFlags);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr FindResourceW(IntPtr hModule, IntPtr lpName, IntPtr lpType);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool FreeLibrary(IntPtr hModule);
+  }
+}
+'@
+  }
+  # LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE
+  $module = [Resone.NativeResourceCheckV2]::LoadLibraryExW($BinaryPath, [IntPtr]::Zero, 0x22)
+  if ($module -eq [IntPtr]::Zero) { return $false }
+  try {
+    # RT_GROUP_ICON = 14. IDI_ICON1 in resources/resource.h is 40003.
+    return [Resone.NativeResourceCheckV2]::FindResourceW($module, [IntPtr]$ResourceId, [IntPtr]14) -ne [IntPtr]::Zero
+  } finally {
+    [void][Resone.NativeResourceCheckV2]::FreeLibrary($module)
+  }
+}
+
+function Remove-LegacyVst3ShellIconArtifacts([string]$BundlePath) {
+  if (!(Test-Path -LiteralPath $BundlePath -PathType Container)) { return }
+
+  # Older Resone builds decorated the .vst3 directory with desktop.ini and
+  # marked the directory ReadOnly plus desktop.ini/Plugin.ico Hidden+System.
+  # Those attributes make a later Copy-Item deployment fail with AccessDenied.
+  # The shell decoration is not needed for the embedded VST icon or the native
+  # editor/taskbar icon, so clean it up permanently before every deployment.
+  $Protected = [IO.FileAttributes]::ReadOnly -bor [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System
+  $Bundle = Get-Item -LiteralPath $BundlePath -Force
+  $Bundle.Attributes = $Bundle.Attributes -band (-bnot $Protected)
+
+  foreach ($Name in @('desktop.ini','Plugin.ico')) {
+    $Path = Join-Path $BundlePath $Name
+    if (Test-Path -LiteralPath $Path) {
+      $Item = Get-Item -LiteralPath $Path -Force
+      $Item.Attributes = $Item.Attributes -band (-bnot $Protected)
+      Remove-Item -LiteralPath $Path -Force
+    }
+  }
+}
+
 function Checkout([string]$Url, [string]$Commit, [string]$Path) {
   if (!(Test-Path "$Path/.git")) {
     if (Test-Path $Path) {
@@ -43,8 +95,29 @@ Run "$Root/third_party/vcpkg/bootstrap-vcpkg.bat" @('-disableMetrics')
 Run "$Root/third_party/vcpkg/vcpkg.exe" @('install','fluidsynth:x64-windows','--classic')
 Run dotnet (@('publish',"$Root/src/wds.resone.api/wds.resone.api.csproj",'-c','Release','-r','win-x64','--self-contained','true','-o',"$Root/build/api") + $PublishFlags)
 Run dotnet (@('publish',"$Root/src/wds.resone.launcher/wds.resone.launcher.csproj",'-c','Release','-r','win-x64','--self-contained','true','-o',"$Root/build/launcher") + $PublishFlags)
+# Clean shell-decoration leftovers from older builds before CMake/iPlug2 deploys.
+# This also repairs an existing installation once, so no manual deletion is needed.
+$AutoVst3Bundle = Join-Path $env:LOCALAPPDATA 'Programs\Common\VST3\Resone.vst3'
+Remove-LegacyVst3ShellIconArtifacts "$Root/build/ui/out/Resone.vst3"
+Remove-LegacyVst3ShellIconArtifacts (Join-Path $InstallDir 'Resone.vst3')
+Remove-LegacyVst3ShellIconArtifacts $AutoVst3Bundle
+
 Run cmake @('-S',"$Root/src/wds.resone.ui",'-B',"$Root/build/ui",'-G','Visual Studio 17 2022','-A','x64')
 Run cmake @('--build',"$Root/build/ui",'--config','Release','--target','Resone-app','Resone-vst3','--parallel')
+
+$StandaloneBinary = "$Root/build/ui/out/Resone.exe"
+$Vst3Module = Get-ChildItem "$Root/build/ui/out/Resone.vst3" -Recurse -File -Filter 'Resone.vst3' -ErrorAction SilentlyContinue | Select-Object -First 1
+if (!(Test-WindowsIconResource $StandaloneBinary)) {
+  throw 'Standalone Resone.exe is missing IDI_ICON1 (resource 40003).'
+}
+if (!$Vst3Module -or !(Test-WindowsIconResource $Vst3Module.FullName)) {
+  throw 'Resone VST3 module is missing IDI_ICON1 (resource 40003). resources/main.rc must be compiled into Resone-vst3.'
+}
+Write-Host 'Verified Resone icon resource in standalone and VST3 binaries.'
+
+# Do not add desktop.ini/Plugin.ico shell decoration to the .vst3 directory.
+# The icon that matters is embedded in the VST3 module and assigned to the native
+# editor window; decorating the bundle folder caused repeat-build AccessDenied errors.
 Copy-Item "$Root/build/api/wds.resone.api.dll" $InstallDir -Force
 Copy-Item "$Root/build/launcher/wds.resone.launcher.exe" $InstallDir -Force
 Copy-Item "$Root/src/wds.resone.ui/resources/Resone.ico" $InstallDir -Force
@@ -104,6 +177,9 @@ Copy-Item "$Root/docs/THIRD-PARTY.md" "$InstallDir/licenses" -Force
 Get-ChildItem "$Root/third_party/vcpkg/installed/x64-windows/share" -Filter copyright -Recurse | ForEach-Object { Copy-Item $_.FullName "$InstallDir/licenses/$($_.Directory.Name)-copyright.txt" -Force }
 Copy-Item "$Root/third_party/iPlug2/LICENSE.txt" "$InstallDir/licenses/iPlug2.txt" -Force
 Copy-Item "$Root/third_party/iPlug2/Dependencies/IPlug/VST3_SDK/LICENSE.txt" "$InstallDir/licenses/VST3.txt" -Force
+# Replace stale legacy shell artifacts one more time immediately before copying in
+# case this install directory was touched while the native build was running.
+Remove-LegacyVst3ShellIconArtifacts (Join-Path $InstallDir 'Resone.vst3')
 Copy-Item "$Root/build/ui/out/Resone.vst3" $InstallDir -Recurse -Force
 # Optional: reuse the exact, already-working native runtimes and models from Six Stars.
 if ($SixStarsRuntimeRoot) {

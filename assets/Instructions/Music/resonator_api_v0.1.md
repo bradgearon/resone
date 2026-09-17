@@ -34,20 +34,23 @@ An explicit-note chord such as [E G# B] also lasts 1 beat by default.
 
 ## Rests
 
-A bare underscore lasts 1 beat; comma and period suffixes shorten it to 0.5 and 0.25 beats. Do not append the word rest.
+A bare underscore lasts 1 beat; comma and period suffixes shorten it to 0.5 and 0.25 beats. Do not append the word rest. Whitespace around the rest marker is optional: `C5_` and `C5 _` both mean play C5, then one beat of rest.
 
 ```text
 _
 _,
 _.
+C5_
+C5 _
 ```
 
 ## Holds
 
-A hold extends the previous note/chord without retriggering it.
+A hold extends the previous note/chord without retriggering it. Whitespace before a trailing hold marker is optional when unambiguous: `A-` and `A -` are equivalent. Negative octaves, cents, and onset offsets keep their normal meaning.
 
 ```text
 A -
+A-
 A, -,
 A. -.
 ```
@@ -90,7 +93,7 @@ The first writer emits one initial MIDI tempo and time signature.
 pp p mp mf f ff
 ```
 
-These set the default velocity for following notes.
+These set the default velocity for following notes. Emit them as bare tokens. Do not write `p=mf`, `dynamic=mf`, or `velocity=mf`. The parser accepts common key/value aliases defensively, but they are not canonical output syntax.
 
 ## Exact velocity
 

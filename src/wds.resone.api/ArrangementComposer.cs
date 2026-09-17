@@ -18,14 +18,18 @@ public sealed class ArrangementComposer(HttpClient http, ResoneSettings settings
     public async Task<JsonObject> ComposeAsync(SongProject project, string laneId, string description, bool useAhd, CancellationToken token)
     {
         var instructions = MusicCompositionInstructions.Load(assetsRoot);
-        if (string.IsNullOrWhiteSpace(instructions.ArrangementInstructions) ||
-            string.IsNullOrWhiteSpace(instructions.ArrangementRepairInstructions))
-            throw new InvalidDataException("music-composition.json requires arrangementInstructions and arrangementRepairInstructions. Deploy the updated instruction file.");
+        if (string.IsNullOrWhiteSpace(instructions.ArrangementInstructions))
+            throw new InvalidDataException("music-composition.json requires arrangementInstructions. Deploy the updated instruction file.");
         var target = project.Lanes.Single(l => l.Id == laneId);
         var compositionTips = InstructionContent.Read(assetsRoot, "composition-tips.md");
         // The request supplies the actual drum map only when composing percussion.
         var references = Regex.Replace(instructions.References,
             @"(?ms)^## Percussion\s.*?(?=^## |\z)", "");
+        // The silent narrative planner already consumed the interval-emotion field guide and
+        // turned it into concrete interval/perspective requirements. Do not make the composer
+        // re-plan the emotions from the full guide; it only needs AHD + executable notation refs.
+        references = Regex.Replace(references,
+            @"(?ms)\nREFERENCE: interval_emotion_field_guide\.md\s.*?(?=\nREFERENCE:|\z)", "\n");
         string prompt = instructions.SystemPrompt + "\n" + references + "\n" + compositionTips
             + "\n" + instructions.ArrangementInstructions;
         if (target.Drums)
@@ -50,21 +54,18 @@ public sealed class ArrangementComposer(HttpClient http, ResoneSettings settings
             ["useAhd"]=useAhd, ["selectedLane"]=LaneContext(target), ["contextLanes"]=context };
         // The decoder can only return the selected lane; context is never a write target.
         var targetProject = new SongProject { Tempo=project.Tempo, Meter=project.Meter, Bars=project.Bars, Lanes=[target] };
-        var messages = new List<ChatMessage> { new("system",prompt), new("user",request.ToJsonString()) };
         ILocalChatModelClient client = settings.NativeInference ? new NativeChatClient(settings) : new LocalAiClient(http,settings);
-        string error = "";
-        for (int attempt=0;attempt<2;attempt++)
+        string intervalGuide = InstructionContent.Read(assetsRoot, "interval_emotion_field_guide.md");
+        string narrative = await MusicNarrativePlanner.CreateAsync(client, description, intervalGuide, useAhd, project.Bars, project.Tempo, project.Meter, token).ConfigureAwait(false);
+        string composerRequest = MusicNarrativePlanner.AppendNarrativePlan(request.ToJsonString(), narrative);
+        var messages = new List<ChatMessage> { new("system",prompt), new("user",composerRequest) };
+        var text = await client.CompleteTextStreamingAsync(messages, 16384, "MusicArrangement", null, token);
+        token.ThrowIfCancellationRequested();
+        try { return Decode(text,targetProject,description); }
+        catch (Exception ex) when (ex is KeyNotFoundException or JsonException or ArgumentException or InvalidOperationException or FormatException or OverflowException or ResonatorParseException)
         {
-            var text = await client.CompleteTextStreamingAsync(messages, 16384,
-                attempt==0 ? "MusicArrangement" : "MusicArrangement.Repair", null, token);
-            token.ThrowIfCancellationRequested();
-            try { return Decode(text,targetProject,description); }
-            catch (Exception ex) when (ex is KeyNotFoundException or JsonException or ArgumentException or InvalidOperationException or FormatException or OverflowException or ResonatorParseException)
-            { error=ex.Message; }
-            messages.Add(new("assistant",text));
-            messages.Add(new("user",instructions.ArrangementRepairInstructions.Replace("{{error}}", error)));
+            throw new InvalidDataException("Invalid arrangement: " + ex.Message, ex);
         }
-        throw new InvalidDataException("Invalid arrangement after one repair attempt: "+error);
     }
 
     public static JsonObject Decode(string text, SongProject project, string description)
