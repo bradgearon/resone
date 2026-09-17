@@ -20,16 +20,16 @@ The existing greedy PCM playback renderer is retained. The recovered selected-la
 
 ## Build a developer version
 
-Run `scripts/build-windows.ps1` on Windows with .NET 9 NativeAOT prerequisites, Visual Studio C++ tools, CMake, Git and Node available. This retains HTTP inference against the existing Six Stars stack by default (`nativeInference:false`, `useExistingStack:true`). Launcher auto-start and MIDI drag still apply. All native and managed components must be rebuilt together because the bridge now exports `resone_set_home`.
+Run `scripts/build-windows.ps1` on Windows with .NET 9 NativeAOT prerequisites, Visual Studio C++ tools, CMake, Git and Node available. This source build now selects the in-process local inference adapter by default (`nativeInference:true` / `useLocalInference:true`). The HTTP `llmUrl` path remains available only when local inference is explicitly disabled. Launcher auto-start and MIDI drag still apply. All native and managed components must be rebuilt together because the bridge now exports `resone_set_home`.
 
-To try native inference, build the adapter using `scripts/build-inference-pack.ps1`, extract the pack to `engines/llm`, and set `nativeInference:true` in the installed appsettings. Configure `nativeModelPath`, `nativeLibraryPath`, `contextTokens`, `gpuLayers` and `allowCpuFallback`. A CPU-only test uses `gpuLayers:0`. Restart the stack after changing model or native library. The pinned llama.cpp revision is in `native/inference/llama-commit.txt`; do not mix a different revision's common headers/libraries with this adapter.
+Local inference uses llama.cpp directly in the launcher worker. `resone_llama_bridge.dll` is a thin app-owned ABI shim; it dynamically loads the downloaded engine pack selected by `llamaEngineDirectories` (Windows x64 defaults to `engines/llm/llama-cpp-dynamic-win-x64`). Configure `nativeModelPath`, `contextTokens`, `gpuLayers`, `flashAttention` and `allowCpuFallback`. The model is warmed when the AI stack starts and remains resident until the stack stops. A CPU-only test uses `gpuLayers:0`. Restart the stack after changing engine/model/inference settings. The bridge compiles against the vendored ABI snapshot in `native/inference/llama_dynamic_abi.hpp`; the build never clones or builds llama.cpp. The runtime engine pack must expose that compatible ABI.
 
 The CPU pack script disables AVX/AVX2/FMA/F16C for a broad baseline. Optimized CPU builds and GPU pack dependencies should be tested on their actual target machines. The native core is portable, but the current iPlug2 WebView editor, tray and protected device-key integration are Windows implementations. macOS/Linux desktop releases still need their platform UI/tray/keystore/drag implementations; their names in the manifest are not a claim that those applications are complete.
 
 ## Prepare a customer release
 
 1. Deploy the licensing worker using `cloud/licensing/README.md`. Test purchase issuance and activation before compiling your customer build.
-2. Copy `config/runtime.release.example.json` to your private production manifest. Fill real engine/model download URLs and SHA256 values. Supply at least Windows x64 CPU LLM and ASR packs. The LLM archive root must contain `resone_inference.dll`; the ASR archive root must contain the configured executable (example `whisper-server.exe`). TTS is optional and needs its own pack, models and service entry when enabled. The example intentionally contains no invented URLs/hashes.
+2. Copy `config/runtime.release.example.json` to your private production manifest. Fill real engine/model download URLs and SHA256 values. Supply at least Windows x64 CPU LLM and ASR packs. The LLM runtime must provide a compatible dynamic llama.cpp engine folder for the target RID (for Windows x64: `llama.dll`, GGML runtime/backends, etc. under the configured `engines/llm/llama-cpp-dynamic-win-x64` directory); `resone_llama_bridge.dll` is built/staged with Resone itself. The ASR archive root must contain the configured executable (example `whisper-server.exe`). TTS is optional and needs its own pack, models and service entry when enabled. The example intentionally contains no invented URLs/hashes.
 3. If using CUDA, add a CUDA LLM pack for the same `engines/llm` directory. With backend `auto`, the launcher checks for the driver library and prefers that pack; missing GPU-specific packs for other engines fall back to CPU. Driver-library presence is a heuristic; validate actual runtime compatibility. A model/context allocation failure can fall back to CPU within the loaded native runtime. A DLL that cannot load due to missing GPU dependencies still requires a corrected pack or choosing CPU.
 4. Run, with your actual values and a fresh staging directory:
 
@@ -53,3 +53,14 @@ Completed here: Worker behavior tests, actual local Workers/D1 concurrent-activa
 Before shipping: run the Windows NativeAOT/iPlug2 build, open the standalone and multiple DAW instances, confirm one tray host, test microphone and drag/drop in your DAWs, activate/renew/release with the real Worker, test GPU/CPU packs on clean machines, and generate with your actual GGUF. The required model and Windows DAW environment were not available for those tests here. No customer keys were generated or deployed.
 
 The local worker accepts only the bootstrap session token and rejects browser Origin headers. A custom external API URL can still target a compatible separately managed host; the managed Resone worker itself is loopback-only. Existing independently running Six Stars services are never stopped when `useExistingStack` is enabled.
+
+2026-09-17 Windows llama bridge compile fix:
+- Guard NOMINMAX because the project already defines it on the compiler command line.
+- Renamed the token decode buffer from small to piece_buffer; Windows headers define small, which made MSVC parse char small[256] as char char[256].
+
+
+## 2026-09-17 native startup diagnostics / DLL search
+- Development runs prefer FluidSynth from the vcpkg bin directory so its transitive DLLs are co-located.
+- Dynamic native loading explicitly searches the target DLL directory plus configured dependency directories.
+- FluidSynth startup writes `logs/native-audio.log` with the resolved runtime root, DLL path, and loader error.
+- The worker now creates an always-on `logs/startup-*.log` before local llama.cpp initialization and records engine/bridge/model resolution, GPU attempt, CPU fallback, and the exact native error if startup fails. No prompts or model output are written to this startup log.

@@ -6,7 +6,7 @@ using Wds.Resone.Api;
 using Wds.Resone.Launcher;
 
 if(args.Contains("--worker")){await WorkerHost.RunAsync([]);return;}
-string root=Path.GetFullPath(Environment.GetEnvironmentVariable("RESONE_HOME")??AppContext.BaseDirectory);
+string root=ResoneRoot.Resolve();
 string user=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Wds","Resone","user");Directory.CreateDirectory(user);
 FileStream owner;
 try{owner=new FileStream(Path.Combine(user,"launcher.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);}

@@ -75,5 +75,19 @@
       ],
       "enabled": false
     }
+  ],
+  "enginePacks": [
+    {
+      "enabled": false,
+      "rid": "win-x64",
+      "backend": "dynamic",
+      "directory": "engines/llm/llama-cpp-dynamic-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/llama-cpp-dynamic-win-x64.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "requiredFiles": [
+        "llama.dll",
+        "ggml.dll"
+      ]
+    }
   ]
 }

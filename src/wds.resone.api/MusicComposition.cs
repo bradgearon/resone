@@ -99,6 +99,11 @@ namespace Wds.Resone.Api.Music
                 request.Bars,
                 request.Tempo,
                 request.Meter,
+                "",
+                "",
+                Array.Empty<string>(),
+                0,
+                "",
                 token).ConfigureAwait(false);
             string composerRequest = MusicNarrativePlanner.AppendNarrativePlan(
                 JsonSerializer.Serialize(request, ResoneJson.Default.MusicCompositionRequest) + "\n" + BuildDurationInstruction(request),

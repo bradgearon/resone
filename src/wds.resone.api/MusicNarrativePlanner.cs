@@ -24,6 +24,11 @@ public static class MusicNarrativePlanner
         int bars,
         int tempo,
         string meter,
+        string existingNotation,
+        string originalBrief,
+        IReadOnlyList<string> promptHistory,
+        double existingLengthBeats,
+        string songGenerationContext,
         CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(userRequest))
@@ -37,6 +42,7 @@ public static class MusicNarrativePlanner
         if (string.IsNullOrWhiteSpace(meter))
             throw new ArgumentException("A meter is required for narrative planning.", nameof(meter));
 
+        bool isRevision = !string.IsNullOrWhiteSpace(existingNotation);
         string ahd = useAhd
             ? "Anchored Harmonic Divergence (AHD) is enabled. Treat chromatic or divergent interval colors as valid expressive material; do not reject an emotional gesture merely because conventional tonal analysis might call it outside the key."
             : "Anchored Harmonic Divergence (AHD) is disabled. The narrative still describes emotional interval gestures, but the later composer will keep them within the requested tonal context.";
@@ -68,6 +74,10 @@ Use held notes, repeated notes, chord intervals, bass motion, register, and reso
 
 Prefer a developing emotional story over repeating one adjective. Preserve the user's intent exactly. If the user asks for happiness, for example, the plan may develop through curiosity, optimism, warmth, playfulness, adventure, affection, freedom, confidence, triumph, tenderness, and contentment—but only choose stages that fit the actual request.
 
+If CURRENT MATERIAL / UPDATE CONTEXT is supplied, this is a revision request, not a blank composition. Read the existing notation as the current musical structure and use the original brief/prompt history as musical memory. Extract whatever useful ideas already exist, then plan the requested change while preserving material the user did not ask to replace. For short update requests such as "More energy", "dreamier", "simplify", or "add variation", describe how the existing phrases/narrative should change rather than inventing an unrelated song from scratch. Required interval gestures should be changes/additions that serve the update, while established motifs, timing, AHD relationships, and successful emotional payoffs should survive unless the request conflicts with them.
+
+Never plan beyond the requested bar count. Every PHRASE bar range must fit inside bars 1 through the requested final bar; closure must occur within that form.
+
 Keep the plan proportional to the requested duration: usually 4-10 phrases/sections. End with:
 Overall arc: feeling -> feeling -> feeling ...
 Required-gesture summary: a compact checklist of the interval/perspective gestures the composer must realize, in order.
@@ -84,15 +94,36 @@ Required-gesture summary: a compact checklist of the interval/perspective gestur
             .AppendLine()
             .AppendLine("HARMONIC MODE")
             .AppendLine(ahd)
-            .AppendLine()
-            .AppendLine("INTERVAL EMOTION FIELD GUIDE")
+            .AppendLine();
+
+        if (isRevision)
+        {
+            user.AppendLine("CURRENT MATERIAL / UPDATE CONTEXT")
+                .AppendLine("This is an update to existing music. Preserve what the new request does not ask to replace.")
+                .AppendLine($"Existing clip length: {existingLengthBeats:0.###} quarter-note beats")
+                .AppendLine("Original brief: " + (string.IsNullOrWhiteSpace(originalBrief) ? "(none)" : originalBrief.Trim()))
+                .AppendLine("Previous update requests: " + (promptHistory.Count == 0 ? "(none)" : string.Join(" -> ", promptHistory)))
+                .AppendLine("Existing Resonator notation / timing:")
+                .AppendLine(existingNotation.Length > 16000 ? existingNotation[..16000] : existingNotation)
+                .AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(songGenerationContext))
+        {
+            user.AppendLine("FULL SONG CONTEXT")
+                .AppendLine("The following context comes from Resone's deterministic song-generation provisioner. Use it to keep this section consistent with the larger piece. Do not rewrite the global song design; plan the selected lane/chunk so it fulfills the assigned section and preserves exact musical memories when they are called for.")
+                .AppendLine(songGenerationContext.Length > 24000 ? songGenerationContext[..24000] : songGenerationContext)
+                .AppendLine();
+        }
+
+        user.AppendLine("INTERVAL EMOTION FIELD GUIDE")
             .AppendLine(intervalEmotionGuide)
             .ToString();
 
         var messages = new List<ChatMessage>
         {
             new("system", system),
-            new("user", user)
+            new("user", user.ToString())
         };
 
         string narrative = (await model.CompleteTextStreamingAsync(

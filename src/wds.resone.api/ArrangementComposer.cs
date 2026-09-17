@@ -15,7 +15,17 @@ public sealed class ArrangementComposer(HttpClient http, ResoneSettings settings
         ("A#2",46,"open hat"), ("C#3",49,"crash"), ("D#3",51,"ride"),
         ("F2",41,"low tom"), ("A2",45,"mid tom"), ("D3",50,"high tom") ];
 
-    public async Task<JsonObject> ComposeAsync(SongProject project, string laneId, string description, bool useAhd, CancellationToken token)
+    public Task<JsonObject> ComposeAsync(SongProject project, string laneId, string description, bool useAhd, CancellationToken token, Func<string, Task>? progress = null)
+        => ComposeCoreAsync(project, laneId, description, useAhd, null, token, progress);
+
+    /// <summary>
+    /// Full-song-only path. It uses the same proven lane arranger but gives it provisioned long-form context and
+    /// allows one plain-text memory block after the notation. The regular ComposeAsync path never sees this contract.
+    /// </summary>
+    public Task<JsonObject> ComposeSongChunkAsync(SongProject project, string laneId, string description, bool useAhd, SongGenerationContext songContext, CancellationToken token, Func<string, Task>? progress = null)
+        => ComposeCoreAsync(project, laneId, description, useAhd, songContext, token, progress);
+
+    private async Task<JsonObject> ComposeCoreAsync(SongProject project, string laneId, string description, bool useAhd, SongGenerationContext? songContext, CancellationToken token, Func<string, Task>? progress)
     {
         var instructions = MusicCompositionInstructions.Load(assetsRoot);
         if (string.IsNullOrWhiteSpace(instructions.ArrangementInstructions))
@@ -38,10 +48,36 @@ public sealed class ArrangementComposer(HttpClient http, ResoneSettings settings
                 + ". Compose a style-appropriate groove with rests, subdivisions and accents.";
         else
             prompt += "\nSelected lane is pitched. Do not emit mode=drums.";
+
+        if (songContext is not null)
+        {
+            prompt += """
+
+FULL SONG SECTION MODE — ONLY ACTIVE FOR THIS REQUEST.
+You are rendering one lane for one producer-planned section of a larger song. The producer ran once before section generation began and does not participate in individual chunks. Follow the supplied FULL SONG GENERATION CONTEXT and CURRENT SECTION.
+Return the selected track first using the normal Resonator contract. AFTER the complete notation, emit a line containing exactly:
+SONG MEMORY NOTES
+Then emit concise plain text with exactly these labels:
+Melody notes: important line-shape, answering-phrase, remembered-note, register, or melodic facts worth carrying forward. Put exact reusable Resonator fragments in backticks when useful. If this lane establishes no melodic fact, leave this line brief.
+Motifs: only important reusable motifs/rhythmic cells. Put exact reusable Resonator fragments in backticks and briefly describe their role.
+Important chords: only important chord/progression/harmonic relationships worth remembering. Put exact reusable Resonator fragments in backticks when available.
+Keep this memory block compact. Do not paste the whole generated track into it. The SONG MEMORY NOTES block is forbidden in ordinary lane generation and exists only in song mode.
+""";
+        }
+
+        static double LaneLength(Lane l)
+        {
+            double noteLength = l.Notes.Count == 0 ? 0 : l.Notes.Max(n => n.Start + n.Duration);
+            double clipLength = l.ClipLengthBeats > 0 && double.IsFinite(l.ClipLengthBeats) ? l.ClipLengthBeats : 0;
+            return Math.Max(noteLength, clipLength);
+        }
         JsonObject LaneContext(Lane l) => new() {
             ["laneId"]=l.Id, ["name"]=l.Name, ["bank"]=l.Bank,
             ["program"]=l.Program, ["drums"]=l.Drums,
             ["existingNotation"]=l.Notation,
+            ["existingLengthBeats"]=LaneLength(l),
+            ["noteCount"]=l.Notes.Count,
+            ["importedMidiName"]=l.ImportedMidiName,
             ["originalBrief"]=l.OriginalBrief,
             ["prompts"]=new JsonArray(l.Prompts.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()) };
         var context = new JsonArray();
@@ -54,14 +90,44 @@ public sealed class ArrangementComposer(HttpClient http, ResoneSettings settings
             ["useAhd"]=useAhd, ["selectedLane"]=LaneContext(target), ["contextLanes"]=context };
         // The decoder can only return the selected lane; context is never a write target.
         var targetProject = new SongProject { Tempo=project.Tempo, Meter=project.Meter, Bars=project.Bars, Lanes=[target] };
-        ILocalChatModelClient client = settings.NativeInference ? new NativeChatClient(settings) : new LocalAiClient(http,settings);
+        ILocalChatModelClient client = settings.LocalInferenceEnabled ? new NativeChatClient(settings) : new LocalAiClient(http,settings);
         string intervalGuide = InstructionContent.Read(assetsRoot, "interval_emotion_field_guide.md");
-        string narrative = await MusicNarrativePlanner.CreateAsync(client, description, intervalGuide, useAhd, project.Bars, project.Tempo, project.Meter, token).ConfigureAwait(false);
+        if (progress is not null) await progress(songContext is null ? "Composing · Directing…" : "Song · Directing section…").ConfigureAwait(false);
+        string narrative = await MusicNarrativePlanner.CreateAsync(
+            client, description, intervalGuide, useAhd, project.Bars, project.Tempo, project.Meter,
+            target.Notation, target.OriginalBrief, target.Prompts, LaneLength(target), songContext?.Packet ?? "", token).ConfigureAwait(false);
         string composerRequest = MusicNarrativePlanner.AppendNarrativePlan(request.ToJsonString(), narrative);
+        if (songContext is not null)
+            composerRequest += "\n\n" + songContext.Packet;
         var messages = new List<ChatMessage> { new("system",prompt), new("user",composerRequest) };
-        var text = await client.CompleteTextStreamingAsync(messages, 16384, "MusicArrangement", null, token);
+        if (progress is not null) await progress(songContext is null ? "Composing · Arranging…" : "Song · Arranging section…").ConfigureAwait(false);
+        var text = await client.CompleteTextStreamingAsync(messages, 16384, songContext is null ? "MusicArrangement" : "SongChunkArrangement", null, token);
         token.ThrowIfCancellationRequested();
-        try { return Decode(text,targetProject,description); }
+        if (progress is not null) await progress(songContext is null ? "Composing · Rendering MIDI…" : "Song · Rendering MIDI…").ConfigureAwait(false);
+
+        string notationText = text;
+        string memoryNotes = "";
+        if (songContext is not null)
+        {
+            var marker = Regex.Match(text, @"(?m)^\s*SONG MEMORY NOTES\s*$", RegexOptions.IgnoreCase);
+            if (marker.Success)
+            {
+                notationText = text[..marker.Index].TrimEnd();
+                memoryNotes = text[(marker.Index + marker.Length)..].Trim();
+            }
+        }
+
+        try
+        {
+            var result = Decode(notationText,targetProject,description);
+            if (songContext is not null)
+            {
+                result["songMemoryNotes"] = memoryNotes;
+                result["songNarrativePlan"] = narrative;
+                result["songSectionId"] = songContext.SectionId;
+            }
+            return result;
+        }
         catch (Exception ex) when (ex is KeyNotFoundException or JsonException or ArgumentException or InvalidOperationException or FormatException or OverflowException or ResonatorParseException)
         {
             throw new InvalidDataException("Invalid arrangement: " + ex.Message, ex);

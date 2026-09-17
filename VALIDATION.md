@@ -11,7 +11,7 @@
 - C# developer and CustomerRelease builds; .NET SDK 9.0.318. Use single-process MSBuild (`-m:1 -nr:false`) in this environment.
 - Linux x64 CustomerRelease NativeAOT publish completed with no warnings/errors on the final publish. Published assets contain no loose instruction files.
 - Executed the published native worker: rejected unauthenticated and browser-Origin WebSocket connections; accepted the bootstrap bearer token; returned ready and valid MIDI for a notation-render request. This used no loose instructions. This was not a real license activation or model inference test.
-- Native inference adapter compiled against the exact llama.cpp commit in `native/inference/llama-commit.txt`. Shared library loaded, ABI version was 1, and a missing-model request returned an error without crashing.
+- Native inference adapter compiles against the vendored llama.cpp ABI snapshot and dynamically loads a prebuilt engine pack; the Resone build does not clone/build llama.cpp. Shared library loaded, ABI version was 1, and a missing-model request returned an error without crashing.
 - Portable C++ MIDI exporter built and output was parsed: selected lane only, chord simultaneity, manually edited pitches/velocities, fractional beat timing, tempo/meter, and percussion channel 10. Missing lanes rejected.
 
 ## Not validated here
@@ -39,3 +39,10 @@ node tests/instruction-bundle.mjs
 ```
 
 Follow `RELEASE-UPDATE.md` for Windows/customer build prerequisites. Test credentials used during validation were ephemeral and are not included.
+
+
+## 2026-09-17 native startup diagnostics / DLL search
+- Development runs prefer FluidSynth from the vcpkg bin directory so its transitive DLLs are co-located.
+- Dynamic native loading explicitly searches the target DLL directory plus configured dependency directories.
+- FluidSynth startup writes `logs/native-audio.log` with the resolved runtime root, DLL path, and loader error.
+- The worker now creates an always-on `logs/startup-*.log` before local llama.cpp initialization and records engine/bridge/model resolution, GPU attempt, CPU fallback, and the exact native error if startup fails. No prompts or model output are written to this startup log.

@@ -3,7 +3,9 @@ using System.Net.WebSockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using Wds.Resone.Resonator;
 using System.Threading.Channels;
 
 namespace Wds.Resone.Api;
@@ -12,6 +14,93 @@ public static unsafe class NativeExports
 {
     private static readonly ConcurrentDictionary<long, BridgeClient> Clients = new();
     private static long _next;
+    [ThreadStatic] private static string? _lastError;
+
+    private static nint CopyResult(byte[] bytes, int* outputLength)
+    {
+        if (outputLength == null)
+            return 0;
+        *outputLength = bytes.Length;
+        if (bytes.Length == 0)
+            return 0;
+        nint memory = Marshal.AllocHGlobal(bytes.Length);
+        Marshal.Copy(bytes, 0, memory, bytes.Length);
+        return memory;
+    }
+
+    private static nint Fail(Exception ex, int* outputLength)
+    {
+        _lastError = ex.Message;
+        if (outputLength != null)
+            *outputLength = 0;
+        return 0;
+    }
+
+    private static string ReadUtf8(byte* value, int length, string name)
+    {
+        if (value == null || length <= 0 || length > 16 * 1024 * 1024)
+            throw new ArgumentException($"Invalid {name}.");
+        return Encoding.UTF8.GetString(new ReadOnlySpan<byte>(value, length));
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "resone_render_midi", CallConvs = [typeof(CallConvCdecl)])]
+    public static nint RenderMidi(byte* notation, int length, int* outputLength)
+    {
+        try
+        {
+            _lastError = null;
+            string text = ReadUtf8(notation, length, "notation");
+            if (text.Length > 65536)
+                throw new ArgumentException("Notation too long.");
+            return CopyResult(new ResonatorMidiGenerator().Generate(text).MidiBytes, outputLength);
+        }
+        catch (Exception ex) { return Fail(ex, outputLength); }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "resone_export_project_midi", CallConvs = [typeof(CallConvCdecl)])]
+    public static nint ExportProjectMidi(byte* json, int length, int* outputLength)
+    {
+        try
+        {
+            _lastError = null;
+            string text = ReadUtf8(json, length, "project JSON");
+            var project = JsonSerializer.Deserialize(text, ResoneJson.Default.SongProject) ?? throw new ArgumentException("Missing project.");
+            return CopyResult(ForgeEngine.Export(project), outputLength);
+        }
+        catch (Exception ex) { return Fail(ex, outputLength); }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "resone_export_lane_midi", CallConvs = [typeof(CallConvCdecl)])]
+    public static nint ExportLaneMidi(byte* json, int jsonLength, byte* laneId, int laneIdLength, int* outputLength)
+    {
+        try
+        {
+            _lastError = null;
+            string text = ReadUtf8(json, jsonLength, "project JSON");
+            string id = ReadUtf8(laneId, laneIdLength, "lane id");
+            var project = JsonSerializer.Deserialize(text, ResoneJson.Default.SongProject) ?? throw new ArgumentException("Missing project.");
+            return CopyResult(ForgeEngine.ExportLane(project, id), outputLength);
+        }
+        catch (Exception ex) { return Fail(ex, outputLength); }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "resone_last_error", CallConvs = [typeof(CallConvCdecl)])]
+    public static nint LastError(int* outputLength)
+    {
+        try
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(_lastError ?? "Local Resonator operation failed.");
+            return CopyResult(bytes, outputLength);
+        }
+        catch { if (outputLength != null) *outputLength = 0; return 0; }
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "resone_free_buffer", CallConvs = [typeof(CallConvCdecl)])]
+    public static void FreeBuffer(nint buffer)
+    {
+        if (buffer != 0)
+            Marshal.FreeHGlobal(buffer);
+    }
     [UnmanagedCallersOnly(EntryPoint = "resone_set_home", CallConvs = [typeof(CallConvCdecl)])]
     public static void SetHome(byte* path) { try { LauncherBootstrap.InstallRoot=Marshal.PtrToStringUTF8((nint)path); } catch {} }
     [UnmanagedCallersOnly(EntryPoint = "resone_open", CallConvs = [typeof(CallConvCdecl)])]
@@ -67,7 +156,7 @@ public static unsafe class NativeExports
     }
 
     [UnmanagedCallersOnly(EntryPoint = "resone_abi_version", CallConvs = [typeof(CallConvCdecl)])]
-    public static int Version() => 1;
+    public static int Version() => 2;
 }
 
 internal sealed class BridgeClient(Uri uri, Action<byte[]> onEvent) : IDisposable

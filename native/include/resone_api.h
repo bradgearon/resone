@@ -8,6 +8,15 @@ extern "C" {
    callbacks remain. NativeAOT modules stay loaded for the host process lifetime. */
 typedef void (*resone_event_fn)(void *user, const uint8_t *utf8, int32_t length);
 int32_t resone_abi_version(void);
+/* Local Resonator/MIDI functions. Returned buffers are owned by the API DLL and
+   must be released with resone_free_buffer. These calls are synchronous and do
+   not use the launcher or WebSocket connection. */
+uint8_t *resone_render_midi(const uint8_t *notation_utf8, int32_t length, int32_t *output_length);
+uint8_t *resone_export_project_midi(const uint8_t *project_json_utf8, int32_t length, int32_t *output_length);
+uint8_t *resone_export_lane_midi(const uint8_t *project_json_utf8, int32_t project_length,
+                                 const uint8_t *lane_id_utf8, int32_t lane_id_length, int32_t *output_length);
+uint8_t *resone_last_error(int32_t *output_length);
+void resone_free_buffer(void *buffer);
 /* Set the installation root before opening the first connection. */
 void resone_set_home(const char *installation_root);
 int64_t resone_open(const char *websocket_url, resone_event_fn callback, void *user);

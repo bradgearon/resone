@@ -78,8 +78,11 @@ void* Resone::OpenWindow(void* parent) {
     // opening the WebView. Reassert the icon after OpenWindow as a safeguard.
     resone::setWindowIcon(editorWindow, IDI_ICON1);
 #ifdef APP_API
-    if (HWND root = GetAncestor(editorWindow, GA_ROOT); root && root != editorWindow)
-        resone::setWindowIcon(root, IDI_ICON1);
+    if (HWND root = GetAncestor(editorWindow, GA_ROOT); root) {
+        if (root != editorWindow)
+            resone::setWindowIcon(root, IDI_ICON1);
+        resone::trackStandaloneWindowBounds(root);
+    }
 #endif
 
     RECT client{};
@@ -94,9 +97,19 @@ void Resone::OnParentWindowResize(int width, int height) {
     // SetWebViewBounds applies the HWND DPI scale, so convert exactly once.
     const float scale = GetScaleForHWND(static_cast<HWND>(editorParent_));
     SetWebViewBounds(0, 0, width / scale, height / scale);
-    EditorResizeFromUI(width, height, false);
+
+    // This callback is parent/OS -> editor. Do not send a resize request
+    // back toward the host here: that API is for the opposite direction and in the
+    // standalone APP creates a resize feedback path that can reapply the
+    // compile-time default dimensions after restored window bounds. Keep
+    // iPlug's editor bookkeeping in sync without requesting another resize.
+    SetEditorSize(width, height);
 }
 void Resone::CloseWindow() {
+#ifdef APP_API
+    if (editorParent_)
+        resone::saveStandaloneWindowBounds(static_cast<HWND>(editorParent_));
+#endif
     ready_ = false;
     voice_.stop(false);
     ++recordingId_;
@@ -111,7 +124,7 @@ void Resone::emit(Json j) {
     }
 }
 void Resone::connect() {
-    api_ = std::make_unique<resone::ApiClient>(home_ / "wds.resone.api.dll", [this](std::string s) {
+    if (!api_) api_ = std::make_unique<resone::ApiClient>(resone::apiLibrary(home_), home_, [this](std::string s) {
         try {
             dispatcher_->post(Json::parse(s));
         } catch (...) {
@@ -139,7 +152,7 @@ void Resone::event(Json j) {
     }
     if (op == "midi") {
         try {
-            resone::saveMidi(j.at("payload").at("data"));
+            resone::saveMidi(j.at("payload").at("data").get<std::string>());
             emit({{"op", "midiSaved"}});
         } catch (const std::exception &e) {
             emit({{"op", "error"}, {"payload", {{"message", e.what()}}}});
@@ -184,6 +197,17 @@ bool Resone::OnMessage(int tag, int, int size, const void *data) {
                 emit({{"op", "project"}, {"payload", project_}});
             if (!api_)
                 connect();
+        } else if (op == "export") {
+            if (!api_) connect();
+            auto midi = api_->exportProjectMidi(p);
+            resone::saveMidi(midi);
+            emit({{"op", "midiSaved"}, {"requestId", j.value("requestId", "")}});
+        } else if (op == "render") {
+            if (!api_) connect();
+            auto notation = p.at("notation").get<std::string>();
+            auto midi = api_->renderMidi(notation);
+            resone::saveMidi(midi);
+            emit({{"op", "midiSaved"}, {"requestId", j.value("requestId", "")}});
         } else if (op == "settings") {
             auto url = p.at("apiUrl").get<std::string>();
             if (url.rfind("ws://", 0) != 0 && url.rfind("wss://", 0) != 0)
@@ -192,7 +216,14 @@ bool Resone::OnMessage(int tag, int, int size, const void *data) {
             resone::saveJson(resone::preferences() / "settings.json", settings_);
             connect();
         } else if (op == "dragMidi") {
-            resone::dragLane(p.at("project"),p.at("laneId").get<std::string>());
+            if (!api_) connect();
+            auto project = p.at("project");
+            auto laneId = p.at("laneId").get<std::string>();
+            resone::dragMidiBytes(api_->exportLaneMidi(project, laneId), false);
+            emit({{"op", "midiDragFinished"}});
+        } else if (op == "dragProjectMidi") {
+            if (!api_) connect();
+            resone::dragMidiBytes(api_->exportProjectMidi(p.at("project")), true);
             emit({{"op", "midiDragFinished"}});
         } else if (op == "play") {
             project_ = p;

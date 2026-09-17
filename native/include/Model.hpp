@@ -14,6 +14,7 @@ struct Lane {
     std::string id, name;
     int bank{}, program{};
     double volume{.8};
+    double clipLengthBeats{};
     bool muted{}, solo{}, drums{};
     std::vector<Note> notes;
 };
@@ -36,14 +37,16 @@ inline Song parseSong(const Json &j) {
         l.program = v.value("program", 0);
         l.bank = v.value("bank", 0);
         l.volume = v.value("volume", .8);
+        l.clipLengthBeats = v.value("clipLengthBeats", 0.0);
         l.muted = v.value("muted", false);
         l.solo = v.value("solo", false);
         l.drums = v.value("drums", false);
         if (l.program < 0 || l.program > 127 || l.bank < 0 || l.bank > 128 || !std::isfinite(l.volume) ||
-            l.volume < 0 || l.volume > 1)
+            l.volume < 0 || l.volume > 1 || !std::isfinite(l.clipLengthBeats) || l.clipLengthBeats < 0 || l.clipLengthBeats > 4096)
             throw std::runtime_error("Invalid instrument or volume");
         if (v.at("notes").size() > 8192)
             throw std::runtime_error("Too many notes");
+        s.length = std::max(s.length, l.clipLengthBeats);
         for (auto &n : v.at("notes")) {
             Note a{n.at("start"), n.at("duration"), n.at("pitch"), n.value("velocity", 96)};
             if (!std::isfinite(a.start) || !std::isfinite(a.duration) || a.start < 0 || a.duration <= 0 ||

@@ -53,8 +53,11 @@ public sealed class ServiceSupervisor(string root, HttpClient http, Action<strin
             return;
         }
         var backend=EnginePackInstaller.Backend(config);SelectedBackend=backend;
-        var packs=config.EnginePacks.Where(p=>p.Rid==EnginePackInstaller.Rid).GroupBy(p=>p.Directory)
-            .Select(group=>group.FirstOrDefault(p=>p.Backend==backend)??group.FirstOrDefault(p=>p.Backend=="cpu")??throw new InvalidDataException("No compatible engine pack for "+group.Key));
+        var packs=config.EnginePacks.Where(p=>p.Enabled&&p.Rid==EnginePackInstaller.Rid).GroupBy(p=>p.Directory)
+            .Select(group=>group.FirstOrDefault(p=>p.Backend==backend)
+                ??group.FirstOrDefault(p=>p.Backend=="dynamic")
+                ??group.FirstOrDefault(p=>p.Backend=="cpu")
+                ??throw new InvalidDataException("No compatible engine pack for "+group.Key));
         foreach(var pack in packs)
             await EnginePackInstaller.InstallAsync(root,pack,http,Report,token);
         foreach(var model in config.Models.Where(m=>m.Enabled))
@@ -62,7 +65,7 @@ public sealed class ServiceSupervisor(string root, HttpClient http, Action<strin
         foreach (var model in config.Models.Where(m => m.Enabled))
             await DownloadAsync(model, token);
         var appSettingsPath=Path.Combine(root,"config","appsettings.json");
-        var native=File.Exists(appSettingsPath) && (JsonSerializer.Deserialize(await File.ReadAllTextAsync(appSettingsPath,token),Wds.Resone.Api.ResoneJson.Default.ResoneSettings)?.NativeInference??false);
+        var native=File.Exists(appSettingsPath) && (JsonSerializer.Deserialize(await File.ReadAllTextAsync(appSettingsPath,token),Wds.Resone.Api.ResoneJson.Default.ResoneSettings)?.LocalInferenceEnabled??false);
 #if RESONE_CUSTOMER_RELEASE
         native=true;
 #endif

@@ -49,6 +49,93 @@ globalThis.LaneNotation = (() => {
     return {serialize,sync,accept};
 })();
 
+// Standard MIDI File reader used for drag-in clips. It keeps source PPQ timing and
+// converts note timing to quarter-note beats, which is the same unit used by the editor.
+globalThis.MidiImport = (() => {
+    const u16 = (v,o) => v.getUint16(o,false), u32 = (v,o) => v.getUint32(o,false);
+    const ascii = (v,o,n) => String.fromCharCode(...new Uint8Array(v.buffer,v.byteOffset+o,n));
+    function vlq(v,state,end) {
+        let value=0,count=0;
+        while(state.o<end && count++<4) {
+            const b=v.getUint8(state.o++); value=(value<<7)|(b&0x7f);
+            if(!(b&0x80)) return value;
+        }
+        throw Error('Invalid MIDI variable-length value.');
+    }
+    function parse(buffer) {
+        const v=buffer instanceof DataView?buffer:new DataView(buffer.buffer||buffer,buffer.byteOffset||0,buffer.byteLength||buffer.byteLength);
+        if(v.byteLength<14 || ascii(v,0,4)!=='MThd') throw Error('This is not a Standard MIDI file.');
+        const hlen=u32(v,4); if(hlen<6 || 8+hlen>v.byteLength) throw Error('Invalid MIDI header.');
+        const format=u16(v,8), trackCount=u16(v,10), division=u16(v,12);
+        if(division&0x8000) throw Error('SMPTE-timed MIDI files are not supported yet.');
+        const ppq=division; if(!ppq) throw Error('MIDI PPQ cannot be zero.');
+        let pos=8+hlen, maxTick=0, tempoEvent=null, meterEvent=null, tempoChanges=0, meterChanges=0;
+        const notes=[], channelCounts=Array(16).fill(0), programs=Array(16).fill(null);
+        for(let ti=0;ti<trackCount;ti++) {
+            if(pos+8>v.byteLength || ascii(v,pos,4)!=='MTrk') throw Error('Invalid MIDI track chunk.');
+            const len=u32(v,pos+4), end=pos+8+len; if(end>v.byteLength) throw Error('Truncated MIDI track.');
+            const st={o:pos+8}; let tick=0,running=0;
+            const active=new Map();
+            const closeNote=(ch,note,at)=>{
+                const key=(ch<<8)|note, stack=active.get(key); if(!stack?.length) return;
+                const started=stack.shift();
+                notes.push({tick:started.tick,durationTicks:Math.max(1,at-started.tick),pitch:note,velocity:started.velocity,channel:ch,track:ti});
+                channelCounts[ch]++;
+            };
+            while(st.o<end) {
+                tick+=vlq(v,st,end); maxTick=Math.max(maxTick,tick);
+                if(st.o>=end) break;
+                let status=v.getUint8(st.o++), firstData=null;
+                if(status<0x80) { if(!running) throw Error('Invalid MIDI running status.'); firstData=status; status=running; }
+                else if(status<0xf0) running=status;
+                if(status===0xff) {
+                    running=0;
+                    if(st.o>=end) break;
+                    const type=v.getUint8(st.o++), n=vlq(v,st,end), start=st.o; if(start+n>end) throw Error('Truncated MIDI meta event.');
+                    if(type===0x51 && n===3) {
+                        const micros=(v.getUint8(start)<<16)|(v.getUint8(start+1)<<8)|v.getUint8(start+2);
+                        const e={tick,bpm:60000000/micros}; tempoChanges++; if(!tempoEvent || tick<tempoEvent.tick) tempoEvent=e;
+                    } else if(type===0x58 && n>=2) {
+                        const e={tick,numerator:v.getUint8(start),denominator:1<<v.getUint8(start+1)};
+                        meterChanges++; if(!meterEvent || tick<meterEvent.tick) meterEvent=e;
+                    }
+                    st.o+=n; continue;
+                }
+                if(status===0xf0 || status===0xf7) { running=0; st.o+=vlq(v,st,end); if(st.o>end) throw Error('Truncated MIDI SysEx.'); continue; }
+                const kind=status&0xf0,ch=status&0x0f, need=(kind===0xc0||kind===0xd0)?1:2;
+                let d1=firstData===null?(st.o<end?v.getUint8(st.o++):0):firstData, d2=0;
+                if(need===2) { if(st.o>=end) throw Error('Truncated MIDI channel event.'); d2=v.getUint8(st.o++); }
+                if(kind===0x90 && d2>0) {
+                    const key=(ch<<8)|d1, stack=active.get(key)||[]; stack.push({tick,velocity:d2}); active.set(key,stack);
+                } else if(kind===0x80 || (kind===0x90 && d2===0)) closeNote(ch,d1,tick);
+                else if(kind===0xc0 && programs[ch]===null) programs[ch]=d1;
+            }
+            for(const [key,stack] of active) while(stack.length) {
+                const started=stack.shift(), note=key&0xff, ch=(key>>8)&0xf;
+                notes.push({tick:started.tick,durationTicks:Math.max(1,tick-started.tick),pitch:note,velocity:started.velocity,channel:ch,track:ti});
+                channelCounts[ch]++;
+            }
+            maxTick=Math.max(maxTick,tick); pos=end;
+        }
+        return {format,trackCount,ppq,maxTick,notes,channelCounts,programs,
+            tempo:tempoEvent?.bpm||120,meter:meterEvent?`${meterEvent.numerator}/${meterEvent.denominator}`:'4/4',
+            tempoChanges,meterChanges,lengthBeats:maxTick/ppq};
+    }
+    function forLane(midi,drums) {
+        let channels=[];
+        for(let ch=0;ch<16;ch++) if(midi.channelCounts[ch] && (drums?ch===9:ch!==9)) channels.push(ch);
+        if(!channels.length) for(let ch=0;ch<16;ch++) if(midi.channelCounts[ch]) channels.push(ch);
+        if(!channels.length) return {notes:[],channel:null,lengthBeats:midi.lengthBeats};
+        channels.sort((a,b)=>midi.channelCounts[b]-midi.channelCounts[a]);
+        const channel=channels[0];
+        const notes=midi.notes.filter(n=>n.channel===channel).map(n=>({
+            start:n.tick/midi.ppq,duration:n.durationTicks/midi.ppq,pitch:n.pitch,velocity:n.velocity
+        })).sort((a,b)=>a.start-b.start||a.pitch-b.pitch);
+        return {notes,channel,lengthBeats:midi.lengthBeats,otherPlayableChannels:Math.max(0,channels.length-1),program:midi.programs[channel]};
+    }
+    return {parse,forLane};
+})();
+
 'use strict';
 const $ = id => document.getElementById(id),
       colors = [ '#f58dc9', '#57c9dc', '#a292f3', '#ffad76', '#76dfa7', '#ffda7d' ];
@@ -68,17 +155,28 @@ const fresh = () => ({
                           muted : false,
                           solo : false,
                           drums : i === 3,
-                          includeInAi : true,
+                          includeInAi : i === 0,
                           notation : '',
                           originalBrief : '',
+                          clipLengthBeats : 0,
+                          importedMidiName : '',
                           notes : []
                       }))
 });
 let song = fresh(), selected = song.lanes[0].id, presets = [], history = [], undo = [], redo = [],
-    pending = null, recording = false, transport = 'stopped', anchor = 0, anchorTime = 0, zoom = 28,
+    pending = null, songRun = null, recording = false, transport = 'stopped', anchor = 0, anchorTime = 0, zoom = 28,
     drag = null;
 const clone = x => JSON.parse(JSON.stringify(x)),
       lane = () => song.lanes.find(l => l.id === selected) || song.lanes[0];
+function normalizeLaneAiDefaults(project) {
+    if (!project?.lanes?.length) return project;
+    project.lanes.forEach((l, i) => {
+        // Preserve explicit saved choices. Older projects that predate the
+        // checkbox receive the new default: Melody/first lane only.
+        if (typeof l.includeInAi !== 'boolean') l.includeInAi = i === 0 || l.name === 'Melody';
+    });
+    return project;
+}
 function send(op, payload = {}, requestId = '') {
     if (typeof IPlugSendMsg !== 'function') {
         status('Native bridge unavailable. Open the standalone app or VST3.');
@@ -114,7 +212,7 @@ function beatsPerBar() {
     return n * 4 / d;
 }
 function duration() {
-    return Math.max(0, ...song.lanes.flatMap(l => l.notes.map(n => n.start + n.duration)));
+    return Math.max(0, ...song.lanes.flatMap(l => [Number(l.clipLengthBeats)||0, ...l.notes.map(n => n.start + n.duration)]));
 }
 function readFields() {
     const tempo = Number($('tempo').value), bars = Number($('bars').value), meter = $('meter').value.trim();
@@ -135,9 +233,11 @@ function busy() {
     $('cancel').hidden = !b && !recording;
     $('voice').textContent = recording ? '➜ Send voice' : '●  Speak your idea';
     $('export').disabled = b;
+    $('dragFullMidi').disabled = b || !duration();
     $('play').disabled = b;
     $('restart').disabled = b;
     $('clear').disabled = b || recording;
+    $('songMode').disabled = b || recording;
     for (const control of document.querySelectorAll('.laneActions input')) control.disabled = b;
     for (const control of document.querySelectorAll('.laneActions button')) control.disabled = b || song.lanes.length === 1;
 }
@@ -178,13 +278,129 @@ function restorePendingComposition() {
         render();
     }
 }
+function restoreSongGeneration() {
+    if (typeof songRun !== 'undefined' && songRun?.previous) {
+        song = songRun.previous;
+        selected = songRun.selectedLaneId || selected;
+        songRun = null;
+        render();
+    }
+}
+function restorePendingWork() {
+    if (pending?.kind === 'compose') restorePendingComposition();
+    else if (pending?.kind === 'songDesign' || pending?.kind === 'songChunk') restoreSongGeneration();
+}
+function songModeEnabled() { return !!$('songMode').checked; }
+function saveSongMode() {
+    try { localStorage.setItem('resone.songMode', songModeEnabled() ? '1' : '0'); } catch {}
+}
+function selectedSongLaneIds() {
+    return song.lanes.filter(l => l.includeInAi !== false).map(l => l.id);
+}
+function startSongGeneration(text) {
+    try {
+        readFields();
+        if (!text.trim()) throw Error('Describe the song you want to create.');
+        if (pending) return;
+        for (const l of song.lanes) LaneNotation.sync(l, song.tempo, song.meter);
+        const includedIds = selectedSongLaneIds();
+        if (!includedIds.length) throw Error('Check at least one lane for song generation.');
+        const previous = clone(song), id = crypto.randomUUID();
+        songRun = {
+            brief : text.trim(), previous, includedIds, state : null, design : '',
+            sectionIndex : 0, laneIndex : 0, selectedLaneId : selected
+        };
+        pending = {id, kind : 'songDesign', brief : text.trim(), previous, includedIds};
+        send('stop'); transport = 'stopped'; anchor = 0;
+        status('Song · Producer planning…'); busy();
+        send('songDesign', {description : text.trim(), tempo : song.tempo, meter : song.meter,
+            targetBars : song.bars, useAhd : $('ahd').checked}, id);
+    } catch (e) { status(e.message); }
+}
+function sectionBounds(section) {
+    const bpb = beatsPerBar(), start = Number(section.startBar || 0) * bpb,
+          length = Math.max(1, Number(section.bars || 1)) * bpb;
+    return {start, length, end : start + length};
+}
+function sectionProject(section) {
+    const {start, length, end} = sectionBounds(section), keep = new Set(songRun.includedIds);
+    const project = {tempo : song.tempo, meter : song.meter, bars : Math.max(1, Number(section.bars || 1)), lanes : []};
+    for (const source of song.lanes) {
+        if (!keep.has(source.id)) continue;
+        const l = clone(source);
+        l.notes = (source.notes || []).filter(n => n.start < end && n.start + n.duration > start).map(n => {
+            const localStart = Math.max(0, n.start - start), localEnd = Math.min(length, n.start + n.duration - start);
+            return {...n, start : localStart, duration : Math.max(.001, localEnd - localStart)};
+        }).filter(n => n.start < length && n.duration > 0);
+        l.clipLengthBeats = length;
+        l.notation = '';
+        delete l.notationSignature;
+        LaneNotation.sync(l, project.tempo, project.meter); LaneNotation.accept(l);
+        project.lanes.push(l);
+    }
+    return project;
+}
+function nextSongChunk() {
+    if (!songRun?.state?.sections?.length) return finishSongGeneration();
+    if (songRun.sectionIndex >= songRun.state.sections.length) return finishSongGeneration();
+    const section = songRun.state.sections[songRun.sectionIndex];
+    while (songRun.laneIndex < songRun.includedIds.length && !song.lanes.some(l => l.id === songRun.includedIds[songRun.laneIndex]))
+        songRun.laneIndex++;
+    if (songRun.laneIndex >= songRun.includedIds.length) {
+        songRun.sectionIndex++; songRun.laneIndex = 0; return nextSongChunk();
+    }
+    const laneId = songRun.includedIds[songRun.laneIndex], target = song.lanes.find(l => l.id === laneId);
+    if (!target) { songRun.laneIndex++; return nextSongChunk(); }
+    const id = crypto.randomUUID(), project = sectionProject(section), bounds = sectionBounds(section);
+    pending = {id, kind : 'songChunk', laneId, sectionId : section.id, sectionIndex : songRun.sectionIndex,
+        laneIndex : songRun.laneIndex, startBeat : bounds.start, endBeat : bounds.end, sectionLength : bounds.length};
+    status(`Song · Section ${songRun.sectionIndex + 1}/${songRun.state.sections.length} · ${target.name} · Queued…`);
+    busy();
+    send('songChunk', {project, songState : songRun.state, sectionId : section.id, laneId,
+        description : section.plan || `${section.title} section`, useAhd : $('ahd').checked}, id);
+}
+function applySongChunk(payload) {
+    if (!songRun || pending?.kind !== 'songChunk') throw Error('Song generation state was lost.');
+    const tracks = payload.tracks;
+    if (!Array.isArray(tracks) || tracks.length !== 1 || tracks[0].laneId !== pending.laneId || !Array.isArray(tracks[0].notes) || !tracks[0].notes.length)
+        throw Error('Invalid song-section arrangement data.');
+    const t = tracks[0], target = song.lanes.find(l => l.id === pending.laneId);
+    if (!target) throw Error('Song lane disappeared during generation.');
+    const start = pending.startBeat, end = pending.endBeat, length = pending.sectionLength;
+    const kept = (target.notes || []).filter(n => n.start < start || n.start >= end);
+    const shifted = t.notes.filter(n => Number.isFinite(n.start) && Number.isFinite(n.duration) && n.duration > 0 && n.start < length + 1e-6)
+        .map(n => ({...n, start : start + Math.max(0, n.start), duration : Math.min(n.duration, Math.max(.001, end - (start + Math.max(0, n.start))))}));
+    target.notes = [...kept, ...shifted].sort((a,b) => a.start-b.start || a.pitch-b.pitch);
+    target.originalBrief = target.originalBrief || songRun.brief;
+    target.prompts = [...(target.prompts || []), `[${songRun.state.sections[pending.sectionIndex].title}] ${songRun.brief}`];
+    target.clipLengthBeats = Math.max(Number(target.clipLengthBeats)||0, ...songRun.state.sections.map(s => sectionBounds(s).end));
+    target.notation = ''; delete target.notationSignature;
+    LaneNotation.sync(target, song.tempo, song.meter); LaneNotation.accept(target);
+    songRun.state = payload.songState || songRun.state;
+    song.started = true;
+    songRun.laneIndex = pending.laneIndex + 1;
+    pending = null;
+    commit();
+    nextSongChunk();
+}
+function finishSongGeneration() {
+    if (!songRun) return;
+    const run = songRun;
+    undo.push(run.previous); if (undo.length > 40) undo.shift(); redo = [];
+    selected = run.selectedLaneId && song.lanes.some(l => l.id === run.selectedLaneId) ? run.selectedLaneId : song.lanes[0].id;
+    history.push({brief : run.brief, song : clone(song), laneId : selected}); if (history.length > 40) history.shift();
+    songRun = null; pending = null; commit(); renderHistory(); busy();
+    status('Song complete. Generated every checked lane through every producer section.');
+    if (duration()) send('play', song);
+}
 function submit() {
     if (recording) {
         send('voiceSend');
         status('Transcribing your idea…');
         return;
     }
-    requestMusic($('brief').value);
+    const text = $('brief').value;
+    if (songModeEnabled()) startSongGeneration(text); else requestMusic(text);
 }
 $('send').onclick = submit;
 $('brief').onkeyup = e => e.stopPropagation();
@@ -213,8 +429,9 @@ $('cancel').onclick = () => {
         send('voiceCancel');
     else if (pending)
         send('cancel', {}, pending.id);
-    restorePendingComposition();
+    restorePendingWork();
     pending = null;
+    if (typeof songRun !== 'undefined') songRun = null;
     recording = false;
     busy();
     status('Cancelled.');
@@ -235,6 +452,7 @@ $('clear').onclick = () => {
     checkpoint();
     send('stop');
     song = fresh();
+    songRun = null;
     selected = song.lanes[0].id;
     history = [];
     $('brief').value = '';
@@ -292,9 +510,11 @@ $('addLane').onclick = () => {
         muted : false,
         solo : false,
         drums : false,
-        includeInAi : true,
+        includeInAi : false,
         notation : '',
         originalBrief : '',
+        clipLengthBeats : 0,
+        importedMidiName : '',
         notes : []
     };
     song.lanes.push(l);
@@ -335,6 +555,13 @@ $('export').onclick = () => {
     pending = {id, kind : 'export'};
     send('export', song, id);
     busy();
+};
+$('dragFullMidi').onclick = e => e.preventDefault();
+$('dragFullMidi').onpointerdown = e => {
+    if (e.button !== 0 || pending || !duration()) return;
+    e.preventDefault();
+    status('Dragging full multitrack MIDI…');
+    send('dragProjectMidi', {project : clone(song)});
 };
 $('zoom').oninput = () => {
     zoom = Number($('zoom').value);
@@ -393,7 +620,9 @@ function render() {
         $(id).value = song[id];
     $('selectedLabel').textContent = lane().name.toUpperCase();
     $('send').title = 'Generate or update ' + lane().name;
-    $('targetLane').textContent = 'Editing: ' + lane().name;
+    $('targetLane').textContent = songModeEnabled()
+        ? 'Song mode: producer plans sections; checked lanes generate one at a time · Editing: ' + lane().name
+        : 'Editing: ' + lane().name + ' · Drop MIDI anywhere to import into this lane';
     const seconds = duration() * 60 / song.tempo;
     $('duration').textContent =
         Math.floor(seconds / 60) + ':' + String(Math.floor(seconds % 60)).padStart(2, '0');
@@ -413,7 +642,7 @@ function render() {
     outputs.replaceChildren();
     song.lanes.forEach((l, i) => {
         const row = document.createElement('div');
-        row.className = 'lane' + (l.id === selected ? ' selected' : '');
+        row.className = 'lane' + (l.id === selected ? ' selected' : '') + (l.includeInAi === false ? ' songExcluded' : '');
         row.style.setProperty('--lane', colors[i % 6]);
         const title = document.createElement('div');
         title.className = 'laneTitle';
@@ -429,6 +658,16 @@ function render() {
         row.append(title);
         const actions = document.createElement('div');
         actions.className = 'laneActions';
+        const includeLabel = document.createElement('label');
+        includeLabel.className = 'laneIncludeLabel';
+        includeLabel.title = 'Include this lane in Song mode generation';
+        const include = document.createElement('input');
+        include.type = 'checkbox'; include.className = 'laneInclude'; include.checked = l.includeInAi !== false;
+        include.onclick = e => e.stopPropagation();
+        include.onchange = e => { e.stopPropagation(); checkpoint(); l.includeInAi = include.checked; changed(); };
+        includeLabel.onclick = e => e.stopPropagation();
+        includeLabel.append(include, document.createTextNode('Song'));
+        actions.append(includeLabel);
         const remove = document.createElement('button');
         remove.textContent = '×';
         remove.title = 'Delete ' + l.name + ' lane';
@@ -669,6 +908,47 @@ $('piano').oncontextmenu = e => {
         changed();
     }
 };
+async function importMidiFile(file) {
+    if (pending || recording) throw Error('Finish the current request before importing MIDI.');
+    if (!file || !/\.midi?$/i.test(file.name || '')) throw Error('Drop a .mid or .midi file.');
+    const parsed = MidiImport.parse(await file.arrayBuffer());
+    const target = lane(), imported = MidiImport.forLane(parsed, target.drums);
+    if (!imported.notes.length) throw Error('No playable note events were found in that MIDI file.');
+    checkpoint(); send('stop'); transport='stopped'; anchor=0;
+    const bpm=Math.round(parsed.tempo);
+    if (Number.isFinite(bpm) && bpm>=30 && bpm<=240) song.tempo=bpm;
+    if (/^(?:[1-9]|1[0-2])\/(?:2|4|8|16)$/.test(parsed.meter)) song.meter=parsed.meter;
+    const [num,den]=song.meter.split('/').map(Number), bpb=num*4/den;
+    const importedBars=Math.max(1,Math.ceil(parsed.lengthBeats/bpb));
+    song.bars=Math.min(64,importedBars);
+    Object.assign(target, {
+        notes: imported.notes,
+        notation: '',
+        clipLengthBeats: parsed.lengthBeats,
+        importedMidiName: file.name,
+        originalBrief: target.originalBrief || ('Imported MIDI clip: ' + file.name)
+    });
+    LaneNotation.sync(target,song.tempo,song.meter); LaneNotation.accept(target);
+    song.started=true;
+    commit();
+    const details=[`${imported.notes.length} notes`,`${parsed.lengthBeats.toFixed(2)} beats`,`${importedBars} bars`];
+    if(imported.otherPlayableChannels) details.push(`used channel ${imported.channel+1} (${imported.otherPlayableChannels} other MIDI channel${imported.otherPlayableChannels===1?'':'s'} not imported)`);
+    if(parsed.tempoChanges>1) details.push('initial tempo used');
+    if(parsed.meterChanges>1) details.push('initial meter used');
+    if(importedBars>64) details.push('generation form capped at 64 bars');
+    status('Imported ' + file.name + ' into ' + target.name + ' · ' + details.join(' · '));
+}
+function midiDragActive(on) { document.body.classList.toggle('midiDropActive', !!on); }
+window.addEventListener('dragenter', e => { if ([...(e.dataTransfer?.items||[])].some(x => x.kind==='file')) { e.preventDefault(); midiDragActive(true); } });
+window.addEventListener('dragover', e => { if ([...(e.dataTransfer?.items||[])].some(x => x.kind==='file')) { e.preventDefault(); if(e.dataTransfer)e.dataTransfer.dropEffect='copy'; midiDragActive(true); } });
+window.addEventListener('dragleave', e => { if (!e.relatedTarget) midiDragActive(false); });
+window.addEventListener('drop', async e => {
+    const file=[...(e.dataTransfer?.files||[])].find(f => /\.midi?$/i.test(f.name));
+    if(!file) { midiDragActive(false); return; }
+    e.preventDefault(); midiDragActive(false);
+    try { await importMidiFile(file); } catch(err) { status(err.message || String(err)); }
+});
+
 function receive(j) {
     const p = j.payload ?? {}, matching = pending && j.requestId === pending.id;
     switch (j.op) {
@@ -685,7 +965,7 @@ function receive(j) {
         break;
     case 'project':
         if (pending) break; // A late restore must not replace an in-flight generation.
-        song = p;
+        song = normalizeLaneAiDefaults(p);
         render();
         break;
     case 'connected':
@@ -700,8 +980,9 @@ function receive(j) {
     case 'disconnected':
         $('connection').textContent = 'Disconnected';
         $('connection').className = 'badge';
-        restorePendingComposition();
+        restorePendingWork();
         pending = null;
+        if (typeof songRun !== 'undefined') songRun = null;
         busy();
         break;
     case 'status':
@@ -720,7 +1001,24 @@ function receive(j) {
             selected = pending.laneId;
             pending = null;
             $('brief').value = text;
-            requestMusic(text);
+            if (songModeEnabled()) startSongGeneration(text); else requestMusic(text);
+        }
+        break;
+    case 'songDesign':
+        if (matching && pending?.kind === 'songDesign') {
+            if (!p.state?.sections?.length) {
+                restoreSongGeneration(); pending = null; busy(); status('Producer did not return a usable section list.'); break;
+            }
+            songRun.state = p.state; songRun.design = p.design || '';
+            songRun.sectionIndex = 0; songRun.laneIndex = 0;
+            pending = null;
+            nextSongChunk();
+        }
+        break;
+    case 'songChunk':
+        if (matching && pending?.kind === 'songChunk') {
+            try { applySongChunk(p); }
+            catch (e) { restoreSongGeneration(); pending = null; busy(); status(e.message); }
         }
         break;
     case 'composition':
@@ -746,8 +1044,9 @@ function receive(j) {
             for (const t of tracks) {
                 const l = song.lanes.find(l => l.id === t.laneId);
                 const before = previous.lanes.find(x => x.id === t.laneId);
+                const generatedLength = Math.max(0, ...t.notes.map(n => n.start + n.duration));
                 Object.assign(l, {notation : t.notation, originalBrief : t.originalBrief || before.originalBrief || brief,
-                    prompts : [...(before.prompts || []), brief], notes : clone(t.notes)});
+                    prompts : [...(before.prompts || []), brief], notes : clone(t.notes), clipLengthBeats : generatedLength});
             }
             for (const t of tracks) LaneNotation.accept(song.lanes.find(l => l.id === t.laneId));
             song.started = true;
@@ -783,16 +1082,18 @@ function receive(j) {
         break;
     case 'cancelled':
         if (matching) {
-            restorePendingComposition();
+            restorePendingWork();
             pending = null;
+            if (typeof songRun !== 'undefined') songRun = null;
             busy();
             status(p.message);
         }
         break;
     case 'error':
         if (!j.requestId || matching) {
-            restorePendingComposition();
+            restorePendingWork();
             pending = null;
+            if (typeof songRun !== 'undefined') songRun = null;
             busy();
             status(p.message || j.message || 'An error occurred.');
         }
@@ -818,6 +1119,8 @@ function animate() {
     head.style.left = (seconds * song.tempo / 60 * zoom) + 'px';
     requestAnimationFrame(animate);
 }
+try { $('songMode').checked = localStorage.getItem('resone.songMode') === '1'; } catch { $('songMode').checked = false; }
+$('songMode').onchange = () => { saveSongMode(); render(); };
 render();
 renderHistory();
 requestAnimationFrame(animate);

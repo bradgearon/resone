@@ -26,6 +26,23 @@ if(WIN32)
   COMPILE_FLAGS "/I\"${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts\" /I\"${CMAKE_CURRENT_SOURCE_DIR}/resources/img\" /I\"${CMAKE_CURRENT_SOURCE_DIR}/resources\"")
 endif()
 
+
+# Thin in-process llama.cpp bridge. Resone vendors only the pinned public ABI
+# declarations needed to compile this loader; it never clones or builds llama.cpp.
+# The actual implementation is supplied at runtime by a prebuilt engine ZIP.
+add_library(resone_llama_bridge SHARED ../../native/inference/resone_llama_bridge.cpp)
+target_include_directories(resone_llama_bridge PRIVATE
+ ../../native/inference
+ ../../native/vendor)
+target_compile_definitions(resone_llama_bridge PRIVATE NOMINMAX)
+target_link_libraries(resone_llama_bridge PRIVATE ${CMAKE_DL_LIBS})
+set_target_properties(resone_llama_bridge PROPERTIES
+ OUTPUT_NAME "resone_llama_bridge"
+ RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out"
+ RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/out/Release"
+ LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out"
+ LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/out/Release")
+
 foreach(target Resone-app Resone-vst3)
  target_include_directories(${target} PRIVATE ../../native/include ../../native/vendor)
  # iPlug2/WDL and RtAudio/ASIO depend on the shell, common-dialog and
@@ -33,5 +50,5 @@ foreach(target Resone-app Resone-vst3)
  # WIN32_LEAN_AND_MEAN here hides HDROP, OPENFILENAME, IUnknown, and Co* APIs
  # across the upstream sources compiled into both targets.
  target_compile_definitions(${target} PRIVATE NOMINMAX)
- target_link_libraries(${target} PRIVATE winmm shell32 ole32 comdlg32 uuid)
+ target_link_libraries(${target} PRIVATE winmm shell32 ole32 comdlg32 comctl32 uuid)
 endforeach()

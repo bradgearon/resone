@@ -8,20 +8,66 @@ using Wds.Resone.Launcher;
 
 namespace Wds.Resone.Launcher;
 internal static class WorkerHost { public static async Task RunAsync(string[] args) {
-string root = Environment.GetEnvironmentVariable("RESONE_HOME") ?? AppContext.BaseDirectory;
+string root = ResoneRoot.Resolve();
+using var startupTrace = new StartupTrace(root);
+startupTrace.Write("worker-start", $"process={Environment.ProcessPath}; cwd={Environment.CurrentDirectory}; root={root}");
 string config = Path.Combine(root, "config", "appsettings.json");
-var settings = File.Exists(config) ? JsonSerializer.Deserialize(File.ReadAllText(config), ResoneJson.Default.ResoneSettings) ?? new() : new ResoneSettings();
+startupTrace.Write("config", $"path={config}; exists={File.Exists(config)}");
+ResoneSettings settings;
+try {
+    settings = File.Exists(config) ? JsonSerializer.Deserialize(File.ReadAllText(config), ResoneJson.Default.ResoneSettings) ?? new() : new ResoneSettings();
+    startupTrace.Write("config-loaded", $"localInference={settings.LocalInferenceEnabled}; context={settings.ContextTokens}; gpuLayers={settings.GpuLayers}; flashAttention={settings.FlashAttention}; reasoning={settings.ReasoningEnabled}; warm={settings.WarmModelOnStackStart}");
+}
+catch (Exception e) {
+    startupTrace.Write("config-failed", e.ToString());
+    throw;
+}
 #if RESONE_CUSTOMER_RELEASE
 settings.NativeInference=true;
+settings.UseLocalInference=true;
 settings.GpuLayers=Environment.GetEnvironmentVariable("RESONE_SELECTED_BACKEND")=="cpu"?0:99;
 settings.LogLlmRequests=false;
 #endif
 string logDiagnostics;
 try { logDiagnostics = Wds.Resone.Api.Ai.LlmRequestLog.Probe(settings, Path.GetFullPath(config)); }
 catch (Exception e) { logDiagnostics = "LLM log write test FAILED. Config: " + config + ". " + e.Message; }
+startupTrace.Write("request-log", logDiagnostics);
 Console.WriteLine(logDiagnostics);
+string inferenceDiagnostics;
+if (settings.LocalInferenceEnabled)
+{
+    try
+    {
+        startupTrace.Write("inference-resolve", $"rid={Wds.Resone.Api.Ai.LlamaEngineResolver.Rid}");
+        string engine = Wds.Resone.Api.Ai.LlamaEngineResolver.EngineDirectory(settings);
+        string llamaLibrary = Wds.Resone.Api.Ai.LlamaEngineResolver.LlamaLibrary(settings);
+        string nativeModel = Wds.Resone.Api.Ai.LlamaEngineResolver.Model(settings);
+        string bridgePath = Wds.Resone.Api.Ai.LlamaEngineResolver.Bridge(settings);
+        string engineFiles = string.Join(", ", Directory.EnumerateFiles(engine).Select(Path.GetFileName).OfType<string>().OrderBy(x => x));
+        startupTrace.Write("inference-paths", $"engine={engine}; files=[{engineFiles}]; llama={llamaLibrary}; bridge={bridgePath}; model={nativeModel}; modelBytes={new FileInfo(nativeModel).Length}");
+        inferenceDiagnostics = $"LLM transport: llama.cpp in-process; rid={Wds.Resone.Api.Ai.LlamaEngineResolver.Rid}; engine={engine}; llama={llamaLibrary}; model={nativeModel}; context={settings.ContextTokens}; gpuLayers={settings.GpuLayers}; flashAttention={settings.FlashAttention}; thinking=off; streaming=on";
+        if (settings.WarmModelOnStackStart)
+        {
+            startupTrace.Write("inference-warmup", "begin");
+            string warm = await Wds.Resone.Api.Ai.NativeChatClient.WarmupAsync(settings, CancellationToken.None, m => startupTrace.Write("inference-load", m));
+            startupTrace.Write("inference-warmup", "complete: " + warm);
+            inferenceDiagnostics += "; warm=" + warm;
+        }
+    }
+    catch (Exception e)
+    {
+        startupTrace.Write("inference-failed", e.ToString());
+        throw new InvalidOperationException("Unable to start local llama.cpp inference: " + e.Message + $". Startup log: {startupTrace.Path}", e);
+    }
+}
+else
+{
+    inferenceDiagnostics = $"LLM transport: HTTP {settings.LlmUrl}";
+}
+startupTrace.Write("inference-ready", inferenceDiagnostics);
+Console.WriteLine(inferenceDiagnostics);
 var trace = new HostTrace(settings);
-trace.Write("startup", detail: $"Process={Environment.ProcessPath}; Config={Path.GetFullPath(config)}; {logDiagnostics}");
+trace.Write("startup", detail: $"Process={Environment.ProcessPath}; Config={Path.GetFullPath(config)}; {inferenceDiagnostics}; {logDiagnostics}");
 using var http = new HttpClient
 {
     Timeout = Timeout.InfiniteTimeSpan
@@ -78,7 +124,7 @@ app.Map("/ws", async context =>
     Task job = Task.CompletedTask;
     try
     {
-        await Send("ready", "", new JsonObject { ["message"] = "Resone Forge ready", ["logging"] = logDiagnostics + $". Serving PID: {Environment.ProcessId}; executable: {Environment.ProcessPath}" });
+        await Send("ready", "", new JsonObject { ["message"] = "Resone Forge ready", ["logging"] = inferenceDiagnostics + ". " + logDiagnostics + $". Serving PID: {Environment.ProcessId}; executable: {Environment.ProcessPath}" });
         var buffer = new byte[16384];
         while (!stop.IsCancellationRequested)
         {
@@ -128,11 +174,31 @@ app.Map("/ws", async context =>
                             break;
                         case "compose":
                             await licensing.EnsureAsync(token);
-                            await Send("status", request.RequestId, new JsonObject { ["message"] = "Composing…" });
                             trace.Write("compose-start", request.RequestId);
-                            var result = await new ForgeEngine(settings, Path.Combine(root, "assets"), http).ComposeAsync(request.Payload, token);
+                            var result = await new ForgeEngine(settings, Path.Combine(root, "assets"), http).ComposeAsync(
+                                request.Payload,
+                                token,
+                                message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
                             token.ThrowIfCancellationRequested();
                             await Send("composition", request.RequestId, result);
+                            break;
+                        case "songDesign":
+                            await licensing.EnsureAsync(token);
+                            trace.Write("song-design-start", request.RequestId);
+                            var songDesign = await new ForgeEngine(settings, Path.Combine(root, "assets"), http).DesignSongAsync(
+                                request.Payload, token,
+                                message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
+                            token.ThrowIfCancellationRequested();
+                            await Send("songDesign", request.RequestId, songDesign);
+                            break;
+                        case "songChunk":
+                            await licensing.EnsureAsync(token);
+                            trace.Write("song-chunk-start", request.RequestId);
+                            var songChunk = await new ForgeEngine(settings, Path.Combine(root, "assets"), http).ComposeSongChunkAsync(
+                                request.Payload, token,
+                                message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
+                            token.ThrowIfCancellationRequested();
+                            await Send("songChunk", request.RequestId, songChunk);
                             break;
                         case "transcribe":
                             await licensing.EnsureAsync(token);

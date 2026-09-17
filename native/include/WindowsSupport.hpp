@@ -1,7 +1,9 @@
 #pragma once
 #include "DynamicLibrary.hpp"
 #include "Model.hpp"
+#include <array>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <deque>
 #include <fstream>
 #include <functional>
@@ -48,23 +50,84 @@ inline bool setWindowIcon(HWND window, int resourceId) {
     SetClassLongPtrW(window, GCLP_HICON, reinterpret_cast<LONG_PTR>(largeIcon));
     return true;
 }
+inline bool isResoneRuntimeRoot(const std::filesystem::path &root) {
+    std::error_code ec;
+    if (root.empty()) return false;
+    // Installed/runtime layout.
+    if (std::filesystem::is_regular_file(root / L"config" / L"appsettings.json", ec) &&
+        (std::filesystem::is_regular_file(root / L"wds.resone.api.dll", ec) ||
+         std::filesystem::is_regular_file(root / L"build" / L"api" / L"wds.resone.api.dll", ec)))
+        return true;
+    return false;
+}
+inline std::filesystem::path findResoneRoot(std::filesystem::path start) {
+    std::error_code ec;
+    start = std::filesystem::absolute(start, ec);
+    if (ec) return {};
+    for (int i = 0; i < 10 && !start.empty(); ++i) {
+        if (isResoneRuntimeRoot(start)) return start;
+        auto parent = start.parent_path();
+        if (parent == start) break;
+        start = std::move(parent);
+    }
+    return {};
+}
 inline std::filesystem::path home() {
-    wchar_t value[32768];
+    wchar_t value[32768]{};
     auto n = GetEnvironmentVariableW(L"RESONE_HOME", value, 32768);
     if (n && n < 32768)
-        return value;
+        return std::filesystem::path(value);
+
+    // Development/build-folder runs must use the source/build tree they were
+    // launched from instead of silently loading an older installed API/config
+    // from LocalAppData. Search from the actual module and current directory.
     HMODULE module{};
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCWSTR>(&home), &module);
-    GetModuleFileNameW(module, value, 32768);
-    auto p = std::filesystem::path(value).parent_path();
-    if (std::filesystem::exists(p / L"assets"))
-        return p;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&home), &module) &&
+        GetModuleFileNameW(module, value, 32768)) {
+        if (auto root = findResoneRoot(std::filesystem::path(value).parent_path()); !root.empty())
+            return root;
+    }
+    if (auto root = findResoneRoot(std::filesystem::current_path()); !root.empty())
+        return root;
+
+    // Installed application fallback. User preferences remain in AppData even
+    // when the runtime itself is discovered beside/in the build tree.
     PWSTR local{};
-    SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local);
-    p = std::filesystem::path(local) / "Wds/Resone";
-    CoTaskMemFree(local);
-    return p;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) {
+        auto root = std::filesystem::path(local) / "Wds/Resone";
+        CoTaskMemFree(local);
+        return root;
+    }
+    return std::filesystem::current_path();
+}
+inline std::filesystem::path apiLibrary(const std::filesystem::path &root) {
+    const std::array candidates{
+        root / L"wds.resone.api.dll",
+        root / L"build" / L"api" / L"wds.resone.api.dll"
+    };
+    for (const auto &candidate : candidates)
+        if (std::filesystem::is_regular_file(candidate)) return candidate;
+    throw std::runtime_error("wds.resone.api.dll was not found under the active Resone runtime root: " + root.string());
+}
+inline std::filesystem::path fluidSynthLibrary(const std::filesystem::path &root) {
+#ifdef _WIN32
+    const std::array candidates{
+        root / L"libfluidsynth-3.dll",
+        root / L"third_party" / L"vcpkg" / L"installed" / L"x64-windows" / L"bin" / L"libfluidsynth-3.dll",
+        root / L"third_party" / L"vcpkg" / L"installed" / L"x64-windows" / L"bin" / L"fluidsynth.dll"
+    };
+#else
+    const std::array candidates{root / L"libfluidsynth.so.3"};
+#endif
+    for (const auto &candidate : candidates)
+        if (std::filesystem::is_regular_file(candidate)) return candidate;
+    // Preserve the installed-layout error path for a useful loader error.
+#ifdef _WIN32
+    return root / L"libfluidsynth-3.dll";
+#else
+    return root / L"libfluidsynth.so.3";
+#endif
 }
 inline std::string utf8Path(const std::filesystem::path &path) {
     auto wide = std::filesystem::absolute(path).wstring();
@@ -134,6 +197,160 @@ inline void saveJson(const std::filesystem::path &path, const Json &j) {
     }
     if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         throw std::runtime_error("Could not replace settings file");
+}
+
+inline HWND rootWindow(HWND window) {
+    if (!window || !IsWindow(window)) return nullptr;
+    if (HWND root = GetAncestor(window, GA_ROOT)) return root;
+    return window;
+}
+inline double visibleWindowFraction(const RECT &candidate) {
+    const long width = std::max<LONG>(0, candidate.right - candidate.left);
+    const long height = std::max<LONG>(0, candidate.bottom - candidate.top);
+    const double area = double(width) * double(height);
+    if (area <= 0) return 0;
+    // Sum visibility across all connected monitor work areas. A deliberately
+    // wide window straddling two displays should not be rejected merely
+    // because neither individual monitor contains 35% of it by itself.
+    struct State { RECT candidate; double visible{}; } state{candidate, 0};
+    EnumDisplayMonitors(nullptr, nullptr,
+        [](HMONITOR monitor, HDC, LPRECT, LPARAM value) -> BOOL {
+            auto *s = reinterpret_cast<State *>(value);
+            MONITORINFO info{sizeof(info)};
+            if (!GetMonitorInfoW(monitor, &info)) return TRUE;
+            RECT overlap{};
+            if (IntersectRect(&overlap, &s->candidate, &info.rcWork)) {
+                const double w = std::max<LONG>(0, overlap.right - overlap.left);
+                const double h = std::max<LONG>(0, overlap.bottom - overlap.top);
+                s->visible += w * h;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&state));
+    return std::min(1.0, state.visible / area);
+}
+inline void saveStandaloneWindowBounds(HWND window) {
+    window = rootWindow(window);
+    if (!window || !IsWindow(window) || IsIconic(window)) return;
+
+    WINDOWPLACEMENT placement{sizeof(placement)};
+    if (!GetWindowPlacement(window, &placement)) return;
+
+    // For a normal window, persist the actual outer frame that the user sees.
+    // rcNormalPosition is useful while maximized, but some APP/framework paths
+    // keep stale/default normal bounds while a normal window is being resized.
+    RECT r{};
+    const bool maximized = IsZoomed(window) != FALSE;
+    if (maximized) {
+        r = placement.rcNormalPosition;
+    } else if (!GetWindowRect(window, &r)) {
+        return;
+    }
+
+    const int width = r.right - r.left, height = r.bottom - r.top;
+    if (width < 300 || height < 200) return;
+    Json bounds{{"x",r.left},{"y",r.top},{"width",width},{"height",height},
+                {"maximized",maximized}};
+    try { saveJson(preferences() / "window.json", bounds); } catch (...) {}
+}
+inline bool restoreStandaloneWindowBounds(HWND window) {
+    window = rootWindow(window);
+    if (!window || !IsWindow(window)) return false;
+    try {
+        std::ifstream in(preferences() / "window.json");
+        Json bounds; if (!in || !(in >> bounds)) return false;
+        const int x=bounds.value("x",0), y=bounds.value("y",0), width=bounds.value("width",0), height=bounds.value("height",0);
+        if (width < 300 || height < 200 || width > 10000 || height > 10000) return false;
+        RECT candidate{LONG(x),LONG(y),LONG(x+width),LONG(y+height)};
+        if (visibleWindowFraction(candidate) < .35) return false;
+
+        // Apply the saved *outer frame* directly. This avoids relying on the
+        // framework's editor-size bookkeeping, which may still contain the
+        // compile-time PLUG_WIDTH/PLUG_HEIGHT during APP startup.
+        if (!SetWindowPos(window, nullptr, x, y, width, height,
+                          SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED))
+            return false;
+
+        if (bounds.value("maximized", false))
+            ShowWindow(window, SW_MAXIMIZE);
+        return true;
+    } catch (...) { return false; }
+}
+
+// Track the actual standalone top-level HWND instead of relying only on the
+// WebView editor lifecycle. The iPlug APP wrapper can perform another default
+// sizing pass shortly after OpenWindow(), so restoration is intentionally
+// delayed until the frame has settled. User-driven move/resize completion and
+// close/destroy persist the actual outer frame.
+inline constexpr UINT_PTR kStandaloneWindowSubclassId = 0x5245534F; // 'RESO'
+inline constexpr UINT_PTR kStandaloneWindowRestoreTimerId = 0x5253; // 'RS'
+inline constexpr UINT kStandaloneWindowRestoreDelayMs = 250;
+struct StandaloneWindowTrackerState { bool restored{}; bool inMoveSize{}; };
+inline LRESULT CALLBACK standaloneWindowTrackerProc(HWND window, UINT message, WPARAM wp, LPARAM lp,
+                                                    UINT_PTR subclassId, DWORD_PTR refData) {
+    auto *state = reinterpret_cast<StandaloneWindowTrackerState *>(refData);
+    switch (message) {
+    case WM_ENTERSIZEMOVE:
+        if (state) state->inMoveSize = true;
+        break;
+    case WM_EXITSIZEMOVE:
+        if (state) state->inMoveSize = false;
+        if (state && state->restored)
+            saveStandaloneWindowBounds(window);
+        break;
+    case WM_SIZE:
+        // Save maximize immediately. A normal interactive resize is saved on
+        // WM_EXITSIZEMOVE. Deliberately do not save SIZE_RESTORED here: APP
+        // startup can emit a late default-size WM_SIZE and overwrite the user's
+        // restored dimensions before they ever touch the window.
+        if (state && state->restored && wp == SIZE_MAXIMIZED)
+            saveStandaloneWindowBounds(window);
+        break;
+    case WM_TIMER:
+        if (wp == kStandaloneWindowRestoreTimerId && state && !state->restored) {
+            KillTimer(window, kStandaloneWindowRestoreTimerId);
+            restoreStandaloneWindowBounds(window);
+            state->restored = true;
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        if (state && state->restored)
+            saveStandaloneWindowBounds(window);
+        break;
+    case WM_NCDESTROY:
+        KillTimer(window, kStandaloneWindowRestoreTimerId);
+        if (state && state->restored)
+            saveStandaloneWindowBounds(window);
+        RemoveWindowSubclass(window, standaloneWindowTrackerProc, subclassId);
+        delete state;
+        return DefSubclassProc(window, message, wp, lp);
+    default:
+        break;
+    }
+    return DefSubclassProc(window, message, wp, lp);
+}
+inline void trackStandaloneWindowBounds(HWND window) {
+    window = rootWindow(window);
+    if (!window || !IsWindow(window)) return;
+    DWORD_PTR existing{};
+    if (GetWindowSubclass(window, standaloneWindowTrackerProc, kStandaloneWindowSubclassId, &existing))
+        return;
+
+    auto *state = new StandaloneWindowTrackerState{};
+    if (!SetWindowSubclass(window, standaloneWindowTrackerProc, kStandaloneWindowSubclassId,
+                           reinterpret_cast<DWORD_PTR>(state))) {
+        delete state;
+        return;
+    }
+
+    // Delay past iPlug APP's initial/default sizing messages. Once this fires,
+    // later normal WM_SIZE messages no longer write over the saved dimensions.
+    if (!SetTimer(window, kStandaloneWindowRestoreTimerId, kStandaloneWindowRestoreDelayMs, nullptr)) {
+        // Timer allocation is extremely unlikely to fail; restore immediately
+        // as a safe fallback rather than abandoning persistence altogether.
+        restoreStandaloneWindowBounds(window);
+        state->restored = true;
+    }
 }
 inline std::string base64(const std::vector<uint8_t> &b) {
     static constexpr char abc[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -326,7 +543,7 @@ class VoiceCapture {
         return wav;
     }
 };
-inline void saveMidi(const std::string &data) {
+inline void saveMidi(const std::vector<uint8_t> &bytes) {
     wchar_t path[MAX_PATH] = L"Resone.mid";
     OPENFILENAMEW dlg{};
     dlg.lStructSize = sizeof(dlg);
@@ -336,11 +553,11 @@ inline void saveMidi(const std::string &data) {
     dlg.lpstrDefExt = L"mid";
     dlg.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     if (GetSaveFileNameW(&dlg)) {
-        auto bytes = unbase64(data);
         std::ofstream out(std::filesystem::path(path), std::ios::binary);
         out.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         if (!out)
             throw std::runtime_error("Could not save MIDI");
     }
 }
+inline void saveMidi(const std::string &data) { saveMidi(unbase64(data)); }
 } // namespace resone

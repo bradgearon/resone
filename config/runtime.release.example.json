@@ -4,18 +4,27 @@
   "requireHashes": true,
   "enginePacks": [
     {
+      "enabled": true,
       "rid": "win-x64",
-      "backend": "cpu",
-      "directory": "engines/llm",
-      "url": "https://YOUR-DOWNLOAD-HOST/resone-llm-win-x64-cpu.zip",
-      "sha256": "REPLACE_WITH_64_HEX_SHA256"
+      "backend": "dynamic",
+      "directory": "engines/llm/llama-cpp-dynamic-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/llama-cpp-dynamic-win-x64.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "requiredFiles": [
+        "llama.dll",
+        "ggml.dll"
+      ]
     },
     {
+      "enabled": true,
       "rid": "win-x64",
       "backend": "cpu",
-      "directory": "engines/asr",
-      "url": "https://YOUR-DOWNLOAD-HOST/resone-asr-win-x64-cpu.zip",
-      "sha256": "REPLACE_WITH_64_HEX_SHA256"
+      "directory": "engines/asr/whispercpp-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/whispercpp-win-x64.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "requiredFiles": [
+        "whisper-server.exe"
+      ]
     }
   ],
   "models": [
@@ -35,7 +44,7 @@
   "services": [
     {
       "name": "Whisper",
-      "executable": "engines/asr/whisper-server.exe",
+      "executable": "engines/asr/whispercpp-win-x64/whisper-server.exe",
       "arguments": [
         "-m",
         "{root}/models/asr/ggml-large-v3-turbo.bin",

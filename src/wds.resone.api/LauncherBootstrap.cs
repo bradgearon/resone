@@ -9,11 +9,16 @@ public static class LauncherBootstrap
  public static string PipeName => "wds-resone-"+Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Environment.UserName)))[..16];
  public static async Task<string> EnsureAsync(CancellationToken token)
  {
-  var root=InstallRoot??Environment.GetEnvironmentVariable("RESONE_HOME")??Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Wds","Resone");
-  var exe=Path.Combine(root,OperatingSystem.IsWindows()?"wds.resone.launcher.exe":"wds.resone.launcher");
-  if(!File.Exists(exe))throw new FileNotFoundException("Install the Resone launcher before using the plugin.",exe);
+  var root=Path.GetFullPath(InstallRoot??ResoneRoot.Resolve());
+  var exe=ResoneRoot.LauncherExecutable(root);
   // A second launcher contacts the existing singleton and exits. Never wait on the DAW thread.
-  using var child=Process.Start(new ProcessStartInfo(exe){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=root,ArgumentList={"--no-ui"}});
+  // Explicitly pass the resolved runtime root so a launcher under build/launcher
+  // reads the source-tree config/engines/models instead of its own build folder
+  // or an older %LOCALAPPDATA% installation.
+  var start=new ProcessStartInfo(exe){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=root};
+  start.ArgumentList.Add("--no-ui");
+  start.Environment["RESONE_HOME"]=root;
+  using var child=Process.Start(start);
   using var pipe=new NamedPipeClientStream(".",PipeName,PipeDirection.InOut,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly);
   using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(TimeSpan.FromMinutes(30));
   await pipe.ConnectAsync(timeout.Token);

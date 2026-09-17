@@ -23,7 +23,7 @@ internal sealed class BackgroundController(string root,HttpClient http,Cancellat
   secret=Convert.ToHexString(RandomNumberGenerator.GetBytes(32));start.Environment["RESONE_HOME"]=root;start.Environment["RESONE_READY_PIPE"]=ready;start.Environment["RESONE_SESSION_TOKEN"]=secret;start.Environment["RESONE_SELECTED_BACKEND"]=supervisor.SelectedBackend;
   var p=new Process{StartInfo=start,EnableRaisingEvents=true};p.Start();worker=p;
   try{
-   using var readyStop=CancellationTokenSource.CreateLinkedTokenSource(token);readyStop.CancelAfter(TimeSpan.FromSeconds(30));
+   using var readyStop=CancellationTokenSource.CreateLinkedTokenSource(token);readyStop.CancelAfter(TimeSpan.FromMinutes(3));
    var connected=pipe.WaitForConnectionAsync(readyStop.Token);var exited=p.WaitForExitAsync(readyStop.Token);
    if(await Task.WhenAny(connected,exited)==exited)throw new InvalidOperationException("Resone worker exited before becoming ready.");
    await connected;using var reader=new StreamReader(pipe);if(await reader.ReadLineAsync(readyStop.Token)!="ready")throw new InvalidOperationException("Invalid worker readiness signal.");

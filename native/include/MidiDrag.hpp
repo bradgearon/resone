@@ -1,6 +1,5 @@
 #pragma once
 #include "WindowsSupport.hpp"
-#include "MidiExport.hpp"
 #include <atomic>
 #include <ole2.h>
 #include <shellapi.h>
@@ -59,20 +58,22 @@ class MidiFileDataObject final:public IDataObject{
  HRESULT STDMETHODCALLTYPE DUnadvise(DWORD)override{return OLE_E_ADVISENOTSUPPORTED;}
  HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA**)override{return OLE_E_ADVISENOTSUPPORTED;}
 };
-inline void dragLane(const Json& project,const std::string& id){
+inline void dragMidiBytes(const std::vector<uint8_t>& data,bool fullProject){
  if(!(GetAsyncKeyState(VK_LBUTTON)&0x8000))throw std::runtime_error("Press and hold the left mouse button to drag MIDI.");
- auto data=laneMidi(project,id);auto directory=preferences()/"midi-drags";std::filesystem::create_directories(directory);
- // Keep files for deferred DAW import. They can be removed explicitly when Resone is closed.
+ if(data.empty())throw std::runtime_error("Local Resonator returned no MIDI data.");
+ auto directory=preferences()/"midi-drags";std::filesystem::create_directories(directory);
  GUID guid;if(FAILED(CoCreateGuid(&guid)))throw std::runtime_error("Could not create a MIDI drag file name.");
- wchar_t name[40];StringFromGUID2(guid,name,40);auto path=std::filesystem::absolute(directory/(std::wstring(L"Resone-")+name+L".mid"));
+ wchar_t name[40];StringFromGUID2(guid,name,40);
+ auto prefix=fullProject?std::wstring(L"Resone-Full-"):std::wstring(L"Resone-");
+ auto path=std::filesystem::absolute(directory/(prefix+name+L".mid"));
  {std::ofstream out(path,std::ios::binary);out.write(reinterpret_cast<const char*>(data.data()),data.size());if(!out)throw std::runtime_error("Could not stage MIDI drag file.");}
  HRESULT init=OleInitialize(nullptr);if(FAILED(init))throw std::runtime_error("MIDI drag requires an STA editor thread.");
  auto object=new MidiFileDataObject(path.wstring());auto source=new MidiDropSource();DWORD effect=0;
- // WebView2 may own mouse capture for the button. OLE must be allowed to take it
- // before DoDragDrop can display the native file cursor and hand CF_HDROP to a DAW.
  ReleaseCapture();
  auto hr=DoDragDrop(object,source,DROPEFFECT_COPY,&effect);
  source->Release();object->Release();OleUninitialize();
- if(FAILED(hr))throw std::runtime_error("Windows could not start MIDI file drag.");
+ if(FAILED(hr))throw std::runtime_error(fullProject?"Windows could not start multitrack MIDI file drag.":"Windows could not start MIDI file drag.");
 }
+
+
 }

@@ -47,6 +47,19 @@ async def main():
     def callback(user,ptr,size):loop.call_soon_threadsafe(queue.put_nowait,json.loads(ctypes.string_at(ptr,size)))
     lib.resone_open.argtypes=[ctypes.c_char_p,cbtype,ctypes.c_void_p];lib.resone_open.restype=ctypes.c_int64
     lib.resone_send.argtypes=[ctypes.c_int64,ctypes.c_char_p,ctypes.c_int32];lib.resone_close.argtypes=[ctypes.c_int64]
+    lib.resone_render_midi.argtypes=[ctypes.c_char_p,ctypes.c_int32,ctypes.POINTER(ctypes.c_int32)];lib.resone_render_midi.restype=ctypes.c_void_p
+    lib.resone_export_project_midi.argtypes=[ctypes.c_char_p,ctypes.c_int32,ctypes.POINTER(ctypes.c_int32)];lib.resone_export_project_midi.restype=ctypes.c_void_p
+    lib.resone_export_lane_midi.argtypes=[ctypes.c_char_p,ctypes.c_int32,ctypes.c_char_p,ctypes.c_int32,ctypes.POINTER(ctypes.c_int32)];lib.resone_export_lane_midi.restype=ctypes.c_void_p
+    lib.resone_last_error.argtypes=[ctypes.POINTER(ctypes.c_int32)];lib.resone_last_error.restype=ctypes.c_void_p
+    lib.resone_free_buffer.argtypes=[ctypes.c_void_p]
+    def local_bytes(fn,*args):
+        n=ctypes.c_int32();ptr=fn(*args,ctypes.byref(n))
+        if not ptr:
+            en=ctypes.c_int32();ep=lib.resone_last_error(ctypes.byref(en));msg=ctypes.string_at(ep,en.value).decode() if ep else 'local operation failed'
+            if ep:lib.resone_free_buffer(ep)
+            raise AssertionError(msg)
+        try:return ctypes.string_at(ptr,n.value)
+        finally:lib.resone_free_buffer(ptr)
     def send(op,payload,id):
         data=json.dumps({'op':op,'requestId':id,'payload':payload}).encode();assert lib.resone_send(handle,data,len(data))==1
     async def until(op,id=None):
@@ -59,11 +72,16 @@ async def main():
             line=await asyncio.wait_for(proc.stdout.readline(),20)
             if b'Now listening' in line:break
             if not line:raise RuntimeError('Host failed to start')
-        assert lib.resone_abi_version()==1;assert lib.resone_open(b'http://invalid',callback,None)==0
+        assert lib.resone_abi_version()==2;assert lib.resone_open(b'http://invalid',callback,None)==0
         handle=lib.resone_open(b'ws://127.0.0.1:8078/ws',callback,None);assert handle;await until('ready')
         project={'tempo':120,'meter':'4/4','bars':8,'lanes':[{'id':'melody','name':'Melody','bank':0,'program':0,'volume':.8,'muted':False,'solo':False,'drums':False,'notation':'','originalBrief':'','notes':[]}]}
+        notation=b'tempo=120 4/4 C4 E4 G4 C5'
+        assert local_bytes(lib.resone_render_midi,notation,len(notation)).startswith(b'MThd')
         send('compose',{'project':project,'laneId':'melody','description':'Hello, then happy','useAhd':True},'c');music=await until('composition','c');assert len(music['notes'])==4 and music['bars']==1 and len(calls)==2
-        project['lanes'][0]['notes']=music['notes'];send('export',project,'e');midi=base64.b64decode((await until('midi','e'))['data']);assert midi.startswith(b'MThd') and b'MTrk' in midi
+        project['lanes'][0]['notes']=music['notes']
+        encoded=json.dumps(project).encode();direct=local_bytes(lib.resone_export_project_midi,encoded,len(encoded));assert direct.startswith(b'MThd') and direct[8:10]==b'\x00\x01'
+        lane=b'melody';single=local_bytes(lib.resone_export_lane_midi,encoded,len(encoded),lane,len(lane));assert single.startswith(b'MThd') and single[8:10]==b'\x00\x00'
+        send('export',project,'e');midi=base64.b64decode((await until('midi','e'))['data']);assert midi.startswith(b'MThd') and b'MTrk' in midi
         send('render',{'notation':'tempo=120 4/4 key=C C4 E4 G4 C5'},'r');assert base64.b64decode((await until('midi','r'))['data']).startswith(b'MThd')
         send('transcribe',{'wav':base64.b64encode(b'RIFF'+b'\0'*60).decode()},'v');assert 'hopeful' in (await until('transcript','v'))['text']
         send('speak',{'text':'Hello'},'s');chunks=[]
@@ -75,7 +93,7 @@ async def main():
         assert [c['sequence'] for c in chunks]==[0,1,2];assert sum(len(base64.b64decode(c['pcm'])) for c in chunks)==24014
         send('compose',{'project':project,'laneId':'melody','description':'cancel-test'},'x');await until('status','x');send('cancel',{},'x');await until('cancelled','x')
         send('render',{'notation':'tempo=96 4/4 key=Cm C3, Eb3, G3, C4::'},'after');await until('midi','after')
-        print('PASS: NativeAOT ABI, WebSocket compose, flexible duration, MIDI export/render, voice transcription, ordered PCM streaming, cancellation and recovery')
+        print('PASS: NativeAOT ABI 2, direct in-process Resonator render/lane/project MIDI, WebSocket compose, compatibility export/render, voice transcription, ordered PCM streaming, cancellation and recovery')
     finally:
         if handle:await asyncio.to_thread(lib.resone_close,handle)
         proc.terminate();await proc.wait();await runner.cleanup();shutil.rmtree(temp)

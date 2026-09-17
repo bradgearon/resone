@@ -13,7 +13,7 @@ cd Resone
 
 `-SixStarsRuntimeRoot` is optional. It copies the `engines` and `models` directories from your existing published app. Use the folder that actually contains those directories, not the source solution folder. The script fetches pinned iPlug2/VST3 SDK sources and builds FluidSynth through pinned vcpkg, then builds:
 
-- `wds.resone.api.dll` — NativeAOT C ABI / WebSocket bridge.
+- `wds.resone.api.dll` — NativeAOT C ABI exposing in-process Resonator MIDI render/export plus the WebSocket bridge used for AI/launcher services.
 - `wds.resone.launcher.exe` — NativeAOT host and inference-process owner.
 - `wds.resone.ui.exe` — standalone iPlug2 app.
 - `Resone.vst3` — the same editor/audio engine as a VST3 bundle.

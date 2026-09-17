@@ -13,7 +13,7 @@ if ($CustomerRelease) {
   foreach ($Item in @($Manifest.enginePacks) + @($Manifest.models | Where-Object enabled)) {
     if ($Item.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or !$Item.url.StartsWith('https://')) { throw 'Every download needs HTTPS and its actual SHA256.' }
   }
-  if (!($Manifest.enginePacks | Where-Object { $_.rid -eq 'win-x64' -and $_.backend -eq 'cpu' -and $_.directory -eq 'engines/llm' })) { throw 'Supply a Windows x64 CPU LLM pack.' }
+  if (!($Manifest.enginePacks | Where-Object { $_.enabled -ne $false -and $_.rid -eq 'win-x64' -and $_.directory -eq 'engines/llm/llama-cpp-dynamic-win-x64' })) { throw 'Supply a Windows x64 prebuilt llama.cpp pack targeting engines/llm/llama-cpp-dynamic-win-x64.' }
   if (Test-Path $InstallDir) { if (Get-ChildItem $InstallDir -Force) { throw 'Use an empty staging directory for CustomerRelease so old instructions/logs cannot ship.' } }
   if ($SixStarsRuntimeRoot) { throw 'Customer releases use downloadable engine packs; do not bundle Six Stars runtime folders.' }
   $PublishFlags = @('-p:CustomerRelease=true',"-p:LicensePublicKeyFile=$([System.IO.Path]::GetFullPath($LicensePublicKeyFile))")
@@ -87,6 +87,10 @@ function Checkout([string]$Url, [string]$Commit, [string]$Path) {
   Run git @('-C',$Path,'checkout','--detach',$Commit)
 }
 New-Item -ItemType Directory -Force "$Root/third_party", $InstallDir | Out-Null
+# Remove the obsolete pre-llama.cpp local-inference shim from older installs.
+# Current Resone never loads resone_inference.dll; leaving it behind makes stale
+# AppData builds and diagnostics needlessly confusing during development.
+Remove-Item "$InstallDir/resone_inference.dll" -Force -ErrorAction SilentlyContinue
 Checkout 'https://github.com/iPlug2/iPlug2.git' 'd54f69050f517e43b941d88c2a170f0a840b9ee4' "$Root/third_party/iPlug2"
 Checkout 'https://github.com/steinbergmedia/vst3sdk.git' '9fad9770f2ae8542ab1a548a68c1ad1ac690abe0' "$Root/third_party/iPlug2/Dependencies/IPlug/VST3_SDK"
 Run git @('-C',"$Root/third_party/iPlug2/Dependencies/IPlug/VST3_SDK",'submodule','update','--init','base','pluginterfaces','public.sdk','cmake')
@@ -103,7 +107,7 @@ Remove-LegacyVst3ShellIconArtifacts (Join-Path $InstallDir 'Resone.vst3')
 Remove-LegacyVst3ShellIconArtifacts $AutoVst3Bundle
 
 Run cmake @('-S',"$Root/src/wds.resone.ui",'-B',"$Root/build/ui",'-G','Visual Studio 17 2022','-A','x64')
-Run cmake @('--build',"$Root/build/ui",'--config','Release','--target','Resone-app','Resone-vst3','--parallel')
+Run cmake @('--build',"$Root/build/ui",'--config','Release','--target','Resone-app','Resone-vst3','resone_llama_bridge','--parallel')
 
 $StandaloneBinary = "$Root/build/ui/out/Resone.exe"
 $Vst3Module = Get-ChildItem "$Root/build/ui/out/Resone.vst3" -Recurse -File -Filter 'Resone.vst3' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -122,6 +126,7 @@ Copy-Item "$Root/build/api/wds.resone.api.dll" $InstallDir -Force
 Copy-Item "$Root/build/launcher/wds.resone.launcher.exe" $InstallDir -Force
 Copy-Item "$Root/src/wds.resone.ui/resources/Resone.ico" $InstallDir -Force
 Copy-Item "$Root/build/ui/out/Resone.exe" "$InstallDir/wds.resone.ui.exe" -Force
+Copy-Item "$Root/build/ui/out/Release/resone_llama_bridge.dll" $InstallDir -Force
 Copy-Item "$Root/third_party/vcpkg/installed/x64-windows/bin/*.dll" $InstallDir -Force
 # FluidSynth uses different DLL basenames across distributions. Keep our ABI loader's name stable.
 $Fluid = Get-ChildItem "$InstallDir/*fluidsynth*.dll" | Select-Object -First 1
@@ -145,6 +150,19 @@ if ($Settings.sttUrl -in @('http://127.0.0.1:8100/inference','http://localhost:8
 }
 # Keep diagnostic logs at the source solution even when the app is installed elsewhere.
 $SourceSettings = Get-Content "$Root/config/appsettings.json" -Raw | ConvertFrom-Json
+# Local inference mode belongs to the source build configuration. Older installers
+# preserved appsettings.json wholesale, which meant changing nativeInference in the
+# source could leave the installed launcher silently using llmUrl/port 8080.
+$UseLocalInference = $false
+if ($SourceSettings.PSObject.Properties['nativeInference']) { $UseLocalInference = $UseLocalInference -or [bool]$SourceSettings.nativeInference }
+if ($SourceSettings.PSObject.Properties['useLocalInference']) { $UseLocalInference = $UseLocalInference -or [bool]$SourceSettings.useLocalInference }
+$Settings | Add-Member -NotePropertyName nativeInference -NotePropertyValue $UseLocalInference -Force
+$Settings | Add-Member -NotePropertyName useLocalInference -NotePropertyValue $UseLocalInference -Force
+foreach ($NativeField in @('llamaEngineDirectories','nativeModelPath','contextTokens','gpuLayers','allowCpuFallback','flashAttention','reasoningEnabled','warmModelOnStackStart','temperature','topK','topP')) {
+  if ($SourceSettings.PSObject.Properties[$NativeField]) {
+    $Settings | Add-Member -NotePropertyName $NativeField -NotePropertyValue $SourceSettings.PSObject.Properties[$NativeField].Value -Force
+  }
+}
 $Enabled = $true
 if ($SourceSettings.PSObject.Properties['logLlmRequests']) { $Enabled = [bool]$SourceSettings.logLlmRequests }
 $LogDirectory = "$Root/logs"
@@ -160,8 +178,14 @@ $Settings | Add-Member -NotePropertyName llmLogDirectory -NotePropertyValue $Log
 $Settings | ConvertTo-Json -Depth 32 | Set-Content $SettingsPath -Encoding UTF8
 $RuntimePath = "$InstallDir/config/runtime.json"
 $Runtime = Get-Content $RuntimePath -Raw | ConvertFrom-Json
-if (!$Runtime.PSObject.Properties['useExistingStack']) {
-  $Runtime | Add-Member -NotePropertyName useExistingStack -NotePropertyValue $true
+$SourceRuntime = Get-Content "$Root/config/runtime.json" -Raw | ConvertFrom-Json
+# Provisioning configuration is source-controlled for development. Synchronize
+# engine/model download settings so editing config/runtime.json cannot leave an
+# older AppData installation silently using stale engine-pack URLs.
+foreach ($RuntimeField in @('useExistingStack','backend','requireHashes','enginePacks','models')) {
+  if ($SourceRuntime.PSObject.Properties[$RuntimeField]) {
+    $Runtime | Add-Member -NotePropertyName $RuntimeField -NotePropertyValue $SourceRuntime.PSObject.Properties[$RuntimeField].Value -Force
+  }
 }
 foreach ($Service in $Runtime.services) {
   if ($Service.name -eq 'Whisper') {
@@ -191,6 +215,7 @@ Write-Host "Run wds.resone.launcher.exe or the standalone app. Opening the VST e
 if ($CustomerRelease) {
   Copy-Item $RuntimeManifest "$InstallDir/config/runtime.json" -Force
   $Settings.nativeInference = $true
+  $Settings | Add-Member -NotePropertyName useLocalInference -NotePropertyValue $true -Force
   $Settings.logLlmRequests = $false
   $Settings | ConvertTo-Json -Depth 32 | Set-Content "$InstallDir/config/appsettings.json" -Encoding UTF8
   @{ enabled=$true; url=$LicenseApiUrl } | ConvertTo-Json | Set-Content "$InstallDir/config/licensing.json" -Encoding UTF8

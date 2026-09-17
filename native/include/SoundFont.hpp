@@ -20,7 +20,9 @@ class SoundFont {
     int (*allOff_)(void *, int){};
 
   public:
-    SoundFont(const std::filesystem::path &dll, const std::filesystem::path &sf2, double rate) : lib_(dll) {
+    SoundFont(const std::filesystem::path &dll, const std::filesystem::path &sf2, double rate,
+              const std::vector<std::filesystem::path> &searchDirectories = {})
+        : lib_(dll, false, searchDirectories) {
         deleteSettings_ = lib_.symbol<Delete>("delete_fluid_settings");
         deleteSynth_ = lib_.symbol<Delete>("delete_fluid_synth");
         setNum_ = lib_.symbol<decltype(setNum_)>("fluid_settings_setnum");

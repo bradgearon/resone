@@ -1,56 +1,322 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json.Nodes;
+
 namespace Wds.Resone.Api.Ai;
 
-// One warm model per worker. All calls are serialized off the UI/audio threads.
+/// <summary>
+/// In-process llama.cpp client. A tiny Resone bridge dynamically loads the platform-selected
+/// llama.cpp engine pack; the GGUF model/context stay resident for the lifetime of the worker.
+/// All generation is serialized away from UI/audio threads and streamed token-by-token.
+/// </summary>
 public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelClient
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
-    private static nint model, library;
+    private static readonly object LoadLock = new();
+    private static nint model;
+    private static nint bridge;
     private static string? identity;
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int Abi();
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate nint Open([MarshalAs(UnmanagedType.LPUTF8Str)] string path,int context,int gpu,int threads,byte[] error,int size);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int Emit(nint user,nint text,int length);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int Cancel(nint user);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int Generate(nint handle,[MarshalAs(UnmanagedType.LPUTF8Str)] string messages,int maxTokens,Emit emit,Cancel cancel,nint user,byte[] error,int size);
-    private static T Export<T>(string name) where T:Delegate => Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(library,name));
-    public async Task<string> CompleteTextStreamingAsync(IReadOnlyList<ChatMessage> messages,int? maxTokens,string label,Action<string>? delta,CancellationToken token)
+    private static string? loadedDescription;
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int Abi();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate nint Open(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string engineDirectory,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string modelPath,
+        int contextTokens,
+        int gpuLayers,
+        int threads,
+        int flashAttention,
+        byte[] error,
+        int errorSize);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int Emit(nint user, nint text, int length);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int Cancel(nint user);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int Generate(
+        nint handle,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string messages,
+        int maxTokens,
+        float temperature,
+        int topK,
+        float topP,
+        Emit emit,
+        Cancel cancel,
+        nint user,
+        byte[] error,
+        int errorSize);
+
+    private static T Export<T>(string name) where T : Delegate
+        => Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(bridge, name));
+
+    public static async Task<string> WarmupAsync(ResoneSettings settings, CancellationToken token, Action<string>? diagnostic = null)
     {
-        var wire=new JsonArray();foreach(var m in messages)wire.Add((JsonNode)new JsonObject{["role"]=m.Role,["content"]=m.Content});
-        using var log=new LlmRequestLog(settings,label,new JsonObject{["transport"]="native",["messages"]=wire,["max_tokens"]=maxTokens??8192});
-        await Gate.WaitAsync(token);
-        try { var result=await Task.Run(() => Run(messages,maxTokens??8192,delta,token),token);log.Complete(result);return result; }
-        catch(Exception e){log.Fail(e,"");throw;}
-        finally { Gate.Release(); }
-    }
-    private string Run(IReadOnlyList<ChatMessage> messages,int budget,Action<string>? delta,CancellationToken token)
-    {
-        var root=Environment.GetEnvironmentVariable("RESONE_HOME")??AppContext.BaseDirectory;
-        var id=Path.GetFullPath(Path.Combine(root,settings.NativeModelPath));
-        var error=new byte[2048];
-        if(model==0)
+        await Gate.WaitAsync(token).ConfigureAwait(false);
+        try
         {
-            if(library==0)library=NativeLibrary.Load(Path.GetFullPath(Path.Combine(root,settings.NativeLibraryPath)));
-            if(Export<Abi>("resone_inference_abi")()!=1) throw new InvalidDataException("Incompatible native inference ABI.");
-            var open=Export<Open>("resone_model_open");
-            model=open(id,settings.ContextTokens,settings.GpuLayers,Math.Max(1,Environment.ProcessorCount/2),error,error.Length);
-            if(model==0 && settings.GpuLayers!=0 && settings.AllowCpuFallback) model=open(id,settings.ContextTokens,0,Math.Max(1,Environment.ProcessorCount/2),error,error.Length);
-            if(model==0) throw new InvalidOperationException(Error(error));
-            identity=id;
+            return await Task.Run(() => EnsureLoaded(settings, diagnostic), token).ConfigureAwait(false);
         }
-        if(identity!=id) throw new InvalidOperationException("Restart the AI stack after changing the model.");
-        var wire=new JsonArray();foreach(var m in messages)wire.Add((JsonNode)new JsonObject{["role"]=m.Role,["content"]=m.Content});
-        var result=new StringBuilder();var decoder=Encoding.UTF8.GetDecoder();Exception? callbackError=null;
-        Emit emit=(_,ptr,count)=>{
-            try{if(token.IsCancellationRequested)return 1;var bytes=new byte[count];Marshal.Copy(ptr,bytes,0,count);var chars=new char[Encoding.UTF8.GetMaxCharCount(count)];int length=decoder.GetChars(bytes,chars,false);var text=new string(chars,0,length);result.Append(text);if(result.Length>65536)throw new InvalidDataException("Model output too long.");delta?.Invoke(text);return 0;}
-            catch(Exception e){callbackError=e;return 1;}
-        };
-        Cancel cancel=_=>token.IsCancellationRequested?1:0;
-        int status=Export<Generate>("resone_model_generate")(model,wire.ToJsonString(),budget,emit,cancel,0,error,error.Length);
-        GC.KeepAlive(emit);GC.KeepAlive(cancel);
-        token.ThrowIfCancellationRequested();if(callbackError!=null)throw callbackError;
-        if(status!=0)throw new InvalidOperationException(Error(error));return result.ToString();
+        finally
+        {
+            Gate.Release();
+        }
     }
-    private static string Error(byte[] b)=>Encoding.UTF8.GetString(b,0,Array.IndexOf(b,(byte)0) is var i&&i>=0?i:b.Length);
+
+    public async Task<string> CompleteTextStreamingAsync(
+        IReadOnlyList<ChatMessage> messages,
+        int? maxTokens,
+        string label,
+        Action<string>? delta,
+        CancellationToken token)
+    {
+        var wire = new JsonArray();
+        foreach (var m in messages)
+            wire.Add((JsonNode)new JsonObject { ["role"] = m.Role, ["content"] = m.Content });
+
+        int budget = maxTokens ?? 8192;
+        using var log = new LlmRequestLog(settings, label, new JsonObject
+        {
+            ["transport"] = "llama.cpp-in-process",
+            ["messages"] = wire,
+            ["max_tokens"] = budget,
+            ["temperature"] = settings.Temperature,
+            ["top_k"] = settings.TopK,
+            ["top_p"] = settings.TopP,
+            ["context_tokens"] = settings.ContextTokens,
+            ["flash_attention"] = settings.FlashAttention,
+            ["enable_thinking"] = false,
+            ["stream"] = true
+        });
+
+        await Gate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            string result = await Task.Run(() => Run(wire.ToJsonString(), budget, delta, token), token).ConfigureAwait(false);
+            log.Complete(result);
+            return result;
+        }
+        catch (Exception e)
+        {
+            log.Fail(e, "");
+            throw;
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
+
+    private string Run(string messages, int budget, Action<string>? delta, CancellationToken token)
+    {
+        EnsureLoaded(settings);
+        var error = new byte[4096];
+        var result = new StringBuilder();
+        var decoder = Encoding.UTF8.GetDecoder();
+        var visible = new VisibleOutputFilter(text =>
+        {
+            result.Append(text);
+            if (result.Length > 65536)
+                throw new InvalidDataException("Model output exceeds Resone's 65536-character safety limit.");
+            delta?.Invoke(text);
+        });
+        Exception? callbackError = null;
+
+        Emit emit = (_, ptr, count) =>
+        {
+            try
+            {
+                if (token.IsCancellationRequested)
+                    return 1;
+                var bytes = new byte[count];
+                Marshal.Copy(ptr, bytes, 0, count);
+                var chars = new char[Encoding.UTF8.GetMaxCharCount(count)];
+                int length = decoder.GetChars(bytes, chars, flush: false);
+                if (length > 0)
+                    visible.Push(new string(chars, 0, length));
+                return 0;
+            }
+            catch (Exception e)
+            {
+                callbackError = e;
+                return 1;
+            }
+        };
+        Cancel cancel = _ => token.IsCancellationRequested ? 1 : 0;
+
+        int status = Export<Generate>("resone_llama_generate")(
+            model,
+            messages,
+            budget,
+            settings.Temperature,
+            settings.TopK,
+            settings.TopP,
+            emit,
+            cancel,
+            0,
+            error,
+            error.Length);
+        GC.KeepAlive(emit);
+        GC.KeepAlive(cancel);
+
+        token.ThrowIfCancellationRequested();
+        if (callbackError is not null)
+            throw callbackError;
+        if (status != 0)
+            throw new InvalidOperationException(Error(error));
+        visible.Complete();
+        return result.ToString();
+    }
+
+    // Gemma 4 thinking is disabled by the chat template, but keep reasoning channels
+    // out of Resone even if a model/template variant emits one defensively. Buffer
+    // only the beginning of the response until we can prove it is normal output.
+    private sealed class VisibleOutputFilter(Action<string> emit)
+    {
+        private const string Start = "<|channel>thought";
+        private const string End = "<channel|>";
+        private readonly StringBuilder pending = new();
+        private int state; // 0 = deciding, 1 = suppressing thought, 2 = visible output
+
+        public void Push(string text)
+        {
+            if (state == 2)
+            {
+                emit(text);
+                return;
+            }
+
+            pending.Append(text);
+            if (pending.Length > 65536)
+                throw new InvalidDataException("Model reasoning channel exceeded Resone's safety limit.");
+            Process();
+        }
+
+        public void Complete()
+        {
+            if (state == 0 && pending.Length > 0)
+            {
+                state = 2;
+                emit(pending.ToString());
+                pending.Clear();
+            }
+            // If generation ended while a thought channel was still open, discard it.
+            // It is never valid Resonator/composer output and must not enter logs/history.
+        }
+
+        private void Process()
+        {
+            if (state == 0)
+            {
+                string value = pending.ToString();
+                int first = 0;
+                while (first < value.Length && char.IsWhiteSpace(value[first])) first++;
+                string candidate = value[first..];
+                if (candidate.Length < Start.Length && Start.StartsWith(candidate, StringComparison.Ordinal))
+                    return;
+                if (candidate.StartsWith(Start, StringComparison.Ordinal))
+                {
+                    state = 1;
+                    pending.Remove(0, first + Start.Length);
+                }
+                else
+                {
+                    state = 2;
+                    emit(value);
+                    pending.Clear();
+                    return;
+                }
+            }
+
+            if (state == 1)
+            {
+                string value = pending.ToString();
+                int end = value.IndexOf(End, StringComparison.Ordinal);
+                if (end < 0) return;
+                string remainder = value[(end + End.Length)..];
+                int firstVisible = 0;
+                while (firstVisible < remainder.Length && (remainder[firstVisible] == '\r' || remainder[firstVisible] == '\n')) firstVisible++;
+                pending.Clear();
+                state = 2;
+                if (firstVisible < remainder.Length) emit(remainder[firstVisible..]);
+            }
+        }
+    }
+
+    private static string EnsureLoaded(ResoneSettings settings, Action<string>? diagnostic = null)
+    {
+        lock (LoadLock)
+        {
+            diagnostic?.Invoke("Resolving llama engine directory.");
+            string engine = LlamaEngineResolver.EngineDirectory(settings);
+            diagnostic?.Invoke($"Engine directory: {engine}");
+            string gguf = LlamaEngineResolver.Model(settings);
+            diagnostic?.Invoke($"GGUF model: {gguf}; bytes={new FileInfo(gguf).Length}");
+            string bridgePath = LlamaEngineResolver.Bridge(settings);
+            diagnostic?.Invoke($"Resone llama bridge: {bridgePath}");
+            string requestedIdentity = string.Join('|', bridgePath, engine, gguf, settings.ContextTokens,
+                settings.GpuLayers, settings.FlashAttention, settings.Temperature, settings.TopK, settings.TopP);
+
+            if (model != 0)
+            {
+                if (!string.Equals(identity, requestedIdentity, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Restart the Resone AI stack after changing llama engine/model/inference settings.");
+                return loadedDescription ?? "llama.cpp model loaded";
+            }
+
+            if (settings.ReasoningEnabled)
+                throw new InvalidOperationException("Resone local inference is intentionally configured with reasoning disabled.");
+
+            if (bridge == 0)
+            {
+                diagnostic?.Invoke("Loading Resone llama bridge DLL.");
+                bridge = NativeLibrary.Load(bridgePath);
+                diagnostic?.Invoke("Resone llama bridge DLL loaded; checking ABI.");
+                if (Export<Abi>("resone_llama_bridge_abi")() != 1)
+                    throw new InvalidDataException("Incompatible Resone llama bridge ABI.");
+                diagnostic?.Invoke("Resone llama bridge ABI OK.");
+            }
+
+            var error = new byte[4096];
+            int threads = Math.Max(1, Environment.ProcessorCount / 2);
+            var open = Export<Open>("resone_llama_open");
+            int actualGpuLayers = settings.GpuLayers;
+            diagnostic?.Invoke($"Opening llama model: context={settings.ContextTokens}; gpuLayers={actualGpuLayers}; threads={threads}; flashAttention={settings.FlashAttention}; thinking=off.");
+            model = open(engine, gguf, settings.ContextTokens, actualGpuLayers, threads,
+                settings.FlashAttention ? 1 : 0, error, error.Length);
+
+            if (model == 0 && actualGpuLayers != 0 && settings.AllowCpuFallback)
+            {
+                string gpuError = Error(error);
+                diagnostic?.Invoke("GPU model load failed: " + gpuError);
+                diagnostic?.Invoke("Retrying llama model load with CPU fallback.");
+                Array.Clear(error, 0, error.Length);
+                actualGpuLayers = 0;
+                model = open(engine, gguf, settings.ContextTokens, 0, threads,
+                    settings.FlashAttention ? 1 : 0, error, error.Length);
+            }
+            if (model == 0)
+            {
+                string nativeError = Error(error);
+                diagnostic?.Invoke("llama model load failed: " + nativeError);
+                throw new InvalidOperationException(nativeError);
+            }
+            diagnostic?.Invoke($"llama model/context loaded successfully; gpuLayers={actualGpuLayers}.");
+
+            identity = requestedIdentity;
+            loadedDescription = $"llama.cpp in-process; engine={engine}; model={gguf}; context={settings.ContextTokens}; gpuLayers={actualGpuLayers}; flashAttention={settings.FlashAttention}; thinking=off; streaming=on";
+            return loadedDescription;
+        }
+    }
+
+    private static string Error(byte[] bytes)
+    {
+        int zero = Array.IndexOf(bytes, (byte)0);
+        return Encoding.UTF8.GetString(bytes, 0, zero >= 0 ? zero : bytes.Length);
+    }
 }

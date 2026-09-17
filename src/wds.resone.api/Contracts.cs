@@ -17,6 +17,9 @@ public sealed class Lane
     public bool IncludeInAi { get; set; } = true;
     public string Notation { get; set; } = "";
     public string OriginalBrief { get; set; } = "";
+    /// <summary>Exact imported/generated clip span in quarter-note beats. Zero means derive it from Notes.</summary>
+    public double ClipLengthBeats { get; set; }
+    public string ImportedMidiName { get; set; } = "";
     public List<string> Prompts { get; set; } = [];
     public List<Note> Notes { get; set; } = [];
 }
@@ -33,12 +36,35 @@ public sealed class ResoneSettings
 {
     public string ApiUrl { get; set; } = "ws://127.0.0.1:8078/ws";
     public string LlmUrl { get; set; } = "http://127.0.0.1:8080/v1/chat/completions";
+    // Backward-compatible native inference switch. Older builds/configs used
+    // nativeInference; newer/user-facing configs may use useLocalInference.
+    // Either flag opts into the in-process GGUF adapter.
     public bool NativeInference { get; set; }
-    public string NativeLibraryPath { get; set; } = "engines/llm/resone_inference.dll";
+    public bool UseLocalInference { get; set; }
+    [JsonIgnore]
+    public bool LocalInferenceEnabled => NativeInference || UseLocalInference;
+    // The actual inference engine is the downloaded llama.cpp runtime selected by platform.
+    // The small Resone C++ ABI bridge is an application implementation detail and is not configurable.
+    public Dictionary<string, string> LlamaEngineDirectories { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["win-x64"] = "engines/llm/llama-cpp-dynamic-win-x64",
+        ["win-arm64"] = "engines/llm/llama-cpp-dynamic-win-arm64",
+        ["linux-x64"] = "engines/llm/llama-cpp-dynamic-linux-x64",
+        ["linux-arm64"] = "engines/llm/llama-cpp-dynamic-linux-arm64",
+        ["osx-x64"] = "engines/llm/llama-cpp-dynamic-osx-x64",
+        ["osx-arm64"] = "engines/llm/llama-cpp-dynamic-osx-arm64"
+    };
     public string NativeModelPath { get; set; } = "models/llm/gemma-4-E4B-it-Q6_K.gguf";
-    public int ContextTokens { get; set; } = 32768;
-    public int GpuLayers { get; set; } = 0;
+    // Match Resone's established local llama.cpp inference configuration.
+    public int ContextTokens { get; set; } = 16384;
+    public int GpuLayers { get; set; } = 99;
     public bool AllowCpuFallback { get; set; } = true;
+    public bool FlashAttention { get; set; } = true;
+    public bool ReasoningEnabled { get; set; } = false;
+    public bool WarmModelOnStackStart { get; set; } = true;
+    public float Temperature { get; set; } = .7f;
+    public int TopK { get; set; } = 40;
+    public float TopP { get; set; } = .95f;
     public string LlmModel { get; set; } = "local-model";
     public string SttUrl { get; set; } = "http://127.0.0.1:8000/inference";
     public string TtsUrl { get; set; } = "http://127.0.0.1:8101/v1/audio/speech";
@@ -59,4 +85,7 @@ public sealed record Envelope(string Op, string RequestId, JsonElement Payload);
 [JsonSerializable(typeof(List<Note>))]
 [JsonSerializable(typeof(MusicCompositionRequest))]
 [JsonSerializable(typeof(MusicCompositionInstructions))]
+[JsonSerializable(typeof(SongGenerationState))]
+[JsonSerializable(typeof(SongSectionMemory))]
+[JsonSerializable(typeof(SongMusicalMemory))]
 public partial class ResoneJson : JsonSerializerContext;

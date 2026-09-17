@@ -4,11 +4,17 @@ using System.Security.Cryptography;
 namespace Wds.Resone.Launcher;
 public sealed class EnginePack
 {
+ public bool Enabled {get;set;}=true;
  public string Rid {get;set;}="win-x64";
- public string Backend {get;set;}="cpu";
+ // Use "dynamic" for a pack that contains llama.dll plus its CPU/GPU backend DLLs
+ // and chooses the usable backend at runtime.
+ public string Backend {get;set;}="dynamic";
  public string Url {get;set;}="";
  public string Sha256 {get;set;}="";
- public string Directory {get;set;}="engines/llm";
+ // The ZIP root is extracted directly into this directory. For the standard
+ // Windows x64 llama pack use engines/llm/llama-cpp-dynamic-win-x64.
+ public string Directory {get;set;}="engines/llm/llama-cpp-dynamic-win-x64";
+ public List<string> RequiredFiles {get;set;}=[];
  public long MaxExtractedBytes {get;set;}=4L*1024*1024*1024;
 }
 public static class EnginePackInstaller
@@ -17,8 +23,11 @@ public static class EnginePackInstaller
  public static string Backend(RuntimeConfig cfg)
  {
   if(cfg.Backend!="auto")return cfg.Backend;
-  if(cfg.EnginePacks.Any(p=>p.Rid==Rid&&p.Backend=="cuda")&&NativeLibrary.TryLoad(OperatingSystem.IsWindows()?"nvcuda.dll":"libcuda.so.1",out var h)){NativeLibrary.Free(h);return "cuda";}
-  if(OperatingSystem.IsMacOS()&&cfg.EnginePacks.Any(p=>p.Rid==Rid&&p.Backend=="metal"))return "metal";
+  // A dynamic pack contains the llama runtime plus whichever GGML backend DLLs
+  // the publisher chose to ship. llama.cpp selects the usable backend itself.
+  if(cfg.EnginePacks.Any(p=>p.Enabled&&p.Rid==Rid&&p.Backend=="dynamic"))return "dynamic";
+  if(cfg.EnginePacks.Any(p=>p.Enabled&&p.Rid==Rid&&p.Backend=="cuda")&&NativeLibrary.TryLoad(OperatingSystem.IsWindows()?"nvcuda.dll":"libcuda.so.1",out var h)){NativeLibrary.Free(h);return "cuda";}
+  if(OperatingSystem.IsMacOS()&&cfg.EnginePacks.Any(p=>p.Enabled&&p.Rid==Rid&&p.Backend=="metal"))return "metal";
   return "cpu";
  }
  public static string Under(string root,string relative)
@@ -28,12 +37,20 @@ public static class EnginePackInstaller
   if(!path.StartsWith(Path.GetFullPath(root)+Path.DirectorySeparatorChar,OperatingSystem.IsWindows()?StringComparison.OrdinalIgnoreCase:StringComparison.Ordinal))throw new InvalidDataException("Package path escapes installation.");
   return path;
  }
+ private static void ValidateRequiredFiles(string target, EnginePack pack)
+ {
+  foreach(var relative in pack.RequiredFiles)
+  {
+   var full=Under(target,relative);
+   if(!File.Exists(full))throw new FileNotFoundException($"Engine pack {pack.Rid}/{pack.Backend} is missing required runtime file: {relative}",full);
+  }
+ }
  public static async Task InstallAsync(string root,EnginePack pack,HttpClient http,Action<string> progress,CancellationToken token)
  {
   if(pack.Sha256.Length!=64||!pack.Sha256.All(Uri.IsHexDigit))throw new InvalidDataException("Engine pack requires a SHA256 hash.");
   if(!Uri.TryCreate(pack.Url,UriKind.Absolute,out var url)||url.Scheme!="https")throw new InvalidDataException("Engine pack URL must use HTTPS.");
   var target=Under(root,pack.Directory);var receipt=Path.Combine(target,".resone-pack-sha256");
-  if(File.Exists(receipt)&&(await File.ReadAllTextAsync(receipt,token)).Trim()==pack.Sha256)return;
+  if(File.Exists(receipt)&&(await File.ReadAllTextAsync(receipt,token)).Trim()==pack.Sha256){ValidateRequiredFiles(target,pack);return;}
   var work=Under(root,"work/"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(work);
   var archive=Path.Combine(work,"pack.zip");var stage=Path.Combine(work,"expanded");Directory.CreateDirectory(stage);
   try{
@@ -55,6 +72,7 @@ public static class EnginePackInstaller
      if(!OperatingSystem.IsWindows()&&((entry.ExternalAttributes>>16)&0x49)!=0)File.SetUnixFileMode(dest,UnixFileMode.UserRead|UnixFileMode.UserWrite|UnixFileMode.UserExecute|UnixFileMode.GroupRead|UnixFileMode.GroupExecute|UnixFileMode.OtherRead|UnixFileMode.OtherExecute);
     }
    }
+   ValidateRequiredFiles(stage,pack);
    await File.WriteAllTextAsync(Path.Combine(stage,".resone-pack-sha256"),pack.Sha256,token);
    Directory.CreateDirectory(Path.GetDirectoryName(target)!);var backup=target+".old-"+Guid.NewGuid().ToString("N");bool moved=false;
    try{if(Directory.Exists(target)){Directory.Move(target,backup);moved=true;}Directory.Move(stage,target);}catch{if(moved&&!Directory.Exists(target))Directory.Move(backup,target);throw;}

@@ -34,3 +34,9 @@ main,.top,.panel,.rollContent{min-width:0}
 .laneTitle>div{max-width:125px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 .midiDrag{margin-left:auto;cursor:grab;touch-action:none;white-space:nowrap}.midiDrag:active{cursor:grabbing}.output>div{min-width:0}.output{gap:8px}fieldset{border:1px solid #3a4f5d;margin:16px 0;border-radius:8px}
+
+body.midiDropActive::after{content:'Drop MIDI to import into the selected lane';position:fixed;inset:14px;z-index:9999;display:grid;place-items:center;border:2px dashed #68b3ff;border-radius:16px;background:#0e1922d9;color:#d9ecff;font-size:20px;letter-spacing:.4px;pointer-events:none;box-shadow:inset 0 0 80px #68b3ff18}
+
+.fullMidiDrag{width:100%;margin-top:10px;border:1px dashed #4f7897;background:#172a38;color:#b9d8ee;font-size:11px;cursor:grab}.fullMidiDrag:hover{border-color:#68b3ff;background:#20384a}.fullMidiDrag:active{cursor:grabbing}
+
+.songModeCheck{margin-left:auto}.songModeCheck+.check{margin-left:0}.laneActions{position:absolute;right:7px;top:7px;display:flex;align-items:center;gap:5px}.laneInclude{width:15px;height:15px;accent-color:var(--lane);cursor:pointer}.laneIncludeLabel{font-size:9px;color:#8fa6b8;display:flex;align-items:center;gap:3px;cursor:pointer}.lane.songExcluded{opacity:.62}.lane.songExcluded .laneTitle{opacity:.72}

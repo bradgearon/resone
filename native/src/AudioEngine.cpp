@@ -1,7 +1,29 @@
 #include "AudioEngine.hpp"
 #include "SoundFont.hpp"
 #include <chrono>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 namespace resone {
+namespace {
+void nativeAudioLog(const std::filesystem::path &home, const std::string &message) noexcept {
+    try {
+        const auto directory = home / "logs";
+        std::filesystem::create_directories(directory);
+        const auto now = std::chrono::system_clock::now();
+        const auto tt = std::chrono::system_clock::to_time_t(now);
+        std::tm tm{};
+#ifdef _WIN32
+        localtime_s(&tm, &tt);
+#else
+        localtime_r(&tt, &tm);
+#endif
+        std::ostringstream line;
+        line << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << " " << message << "\n";
+        std::ofstream(directory / "native-audio.log", std::ios::app) << line.str();
+    } catch (...) {}
+}
+}
 AudioEngine::AudioEngine(std::filesystem::path home, std::function<void(Json)> emit)
     : home_(std::move(home)), emit_(std::move(emit)), worker_([this] { run(); }) {}
 AudioEngine::~AudioEngine() {
@@ -65,12 +87,33 @@ void AudioEngine::process(double **out, int channels, int count) noexcept {
 void AudioEngine::run() {
     try {
 #ifdef _WIN32
-        auto dll = home_ / "libfluidsynth-3.dll";
+        const auto vcpkgBin = home_ / "third_party/vcpkg/installed/x64-windows/bin";
+        const bool developmentTree = std::filesystem::is_regular_file(home_ / "Wds.Resone.sln");
+        std::vector<std::filesystem::path> candidates;
+        if (developmentTree) {
+            // A source-tree run should use the vcpkg FluidSynth build together
+            // with the dependency DLLs that were installed beside it. A copied
+            // root-level libfluidsynth can exist while its transitive DLLs do not.
+            candidates = {vcpkgBin / "libfluidsynth-3.dll", vcpkgBin / "fluidsynth.dll",
+                          home_ / "libfluidsynth-3.dll"};
+        } else {
+            candidates = {home_ / "libfluidsynth-3.dll", vcpkgBin / "libfluidsynth-3.dll",
+                          vcpkgBin / "fluidsynth.dll"};
+        }
+        std::filesystem::path dll = candidates.front();
+        for (const auto &candidate : candidates) {
+            if (std::filesystem::is_regular_file(candidate)) { dll = candidate; break; }
+        }
+        std::vector<std::filesystem::path> dependencySearch{dll.parent_path(), home_, vcpkgBin};
 #else
         auto dll = home_ / "libfluidsynth.so.3";
+        std::vector<std::filesystem::path> dependencySearch{dll.parent_path(), home_};
 #endif
         int rate = requestedRate_;
-        auto font = std::make_unique<SoundFont>(dll, home_ / "assets/GeneralUser-GS.sf2", rate);
+        nativeAudioLog(home_, "FluidSynth startup. home=" + home_.string() + "; dll=" + dll.string() +
+                                  "; exists=" + (std::filesystem::is_regular_file(dll) ? "true" : "false"));
+        auto font = std::make_unique<SoundFont>(dll, home_ / "assets/GeneralUser-GS.sf2", rate, dependencySearch);
+        nativeAudioLog(home_, "FluidSynth loaded successfully.");
         emit_({{"op", "instruments"}, {"payload", font->presets()}});
         while (!quitting_) {
             Song song;
@@ -93,7 +136,7 @@ void AudioEngine::run() {
             try {
                 if (rate != requestedRate_) {
                     rate = requestedRate_;
-                    font = std::make_unique<SoundFont>(dll, home_ / "assets/GeneralUser-GS.sf2", rate);
+                    font = std::make_unique<SoundFont>(dll, home_ / "assets/GeneralUser-GS.sf2", rate, dependencySearch);
                 }
                 font->reset();
                 struct Event {
@@ -191,12 +234,14 @@ void AudioEngine::run() {
                     emit_({{"op", "transport"},
                            {"payload", {{"state", "stopped"}, {"seconds", double(consumed_) / rate}}}});
             } catch (const std::exception &e) {
+                nativeAudioLog(home_, std::string("FluidSynth/render error: ") + e.what());
                 playing_ = false;
                 generation_.fetch_add(1);
                 emit_({{"op", "error"}, {"payload", {{"message", e.what()}}}});
             }
         }
     } catch (const std::exception &e) {
+        nativeAudioLog(home_, std::string("FluidSynth startup failed: ") + e.what());
         emit_({{"op", "error"}, {"payload", {{"message", e.what()}}}});
     }
 }
