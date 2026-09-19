@@ -89,3 +89,50 @@ Not executable in this environment:
 - `build-launcher-live-regression.py` passes and verifies automatic build-only behavior while the launcher is running.
 - Full non-browser Python and CJS regression suites pass.
 - Playwright UI validation was not runnable in this environment because the Chromium binary is not installed.
+
+## Composer Design Pass validation
+- `node tests/song-composer-design-pass.cjs` — PASS.
+- Full `tests/*.cjs` regression suite — PASS.
+- Full non-browser/non-built-launcher `tests/*.py` regression suite — PASS.
+- `node --check src/wds.resone.ui/resources/web/app.js` — PASS.
+- Playwright UI regression could not run in this environment because the Playwright Chromium binary is not installed.
+- .NET compile could not be run in this environment because the .NET SDK is not installed.
+
+## Shared AI runtime provisioning validation (2026-09-18)
+
+- `tests/ai-runtime-provisioning-regression.py` passes and verifies `AI_ROOT`, launcher path persistence, package receipts/versioning, active-engine pointers, NVIDIA/AMD/Intel detection hooks, and centralized dependency pins.
+- Full `.cjs` source regression suite passes after updating the local-inference regression for shared AI runtime semantics.
+- Non-browser/non-built integration Python regressions pass, including launcher live-build, llama ABI pin, Qwen pin, native startup, vocal planner/register, and song parser tests.
+- `tests/integration.py` still requires built .NET/native paths and was not runnable here; Playwright remains browser-environment dependent.
+- .NET 9 compilation was not executable in this container because the .NET SDK is not installed. The new receipt serialization uses the existing source-generated JSON context so the launcher remains compatible with reflection-disabled AOT publishing.
+
+## Application updater validation
+
+- `tests/updater-regression.py` verifies local update policy, remote manifest shape, launcher-before-UI update ordering, detached updater runner, hash/extraction/rollback/relaunch code paths, VST installer artifact support, build staging, and the single-daily-log regression.
+- All CJS regressions pass after adding `logging` and `updates` to runtime config synchronization.
+- All standalone Python regressions pass except environment-dependent `editor.spec.py` (Playwright Chromium unavailable) and `integration.py` (requires explicit dotnet/launcher/native/source command-line inputs).
+- This container does not contain the .NET SDK/MSVC Windows toolchain, so the Windows NativeAOT publish itself must be compiled on the Windows development machine.
+
+## 2026-09-19 editor validation
+
+- `node --check src/wds.resone.ui/resources/web/app.js`
+- `g++ -std=c++20 -fsyntax-only -Inative/include -Inative/vendor native/src/AudioEngine.cpp`
+- `python tests/piano-roll-interaction-regression.py`
+- Existing CJS/Python source regressions rerun for this package where supported by the container.
+
+### UI startup / DOM contract repair
+
+Validated after the 2026-09-19 startup repair:
+
+- `node --check src/wds.resone.ui/resources/web/app.js`
+- `python tests/ui-dom-contract-regression.py`
+- `python tests/piano-roll-interaction-regression.py`
+- `node tests/vocal-source-selector.cjs`
+- `node tests/song-workspace.cjs`
+- `node tests/song-mode.cjs`
+- `node tests/song-composer-design-pass.cjs`
+- `python tests/updater-regression.py`
+- `python tests/ai-runtime-provisioning-regression.py`
+- `python tests/build-launcher-live-regression.py`
+
+The container does not provide the Windows MSVC/.NET toolchain, so the final Windows publish/link still needs to run on the Windows checkout.

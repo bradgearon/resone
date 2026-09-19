@@ -6,7 +6,7 @@ namespace Wds.Resone.Api;
 /// <summary>First full-song pass: plain-text producer notes only. It never emits notes or MIDI.</summary>
 public static class SongCompositionDesigner
 {
-    public static async Task<string> CreateAsync(ILocalChatModelClient model, string brief, int tempo, string meter, int targetBars, bool useAhd, CancellationToken token)
+    public static async Task<string> CreateAsync(ILocalChatModelClient model, string brief, int tempo, string meter, int targetBars, bool useAhd, string existingComposerOverview, CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(brief)) throw new ArgumentException("A song brief is required.", nameof(brief));
         if (tempo is < 30 or > 240) throw new ArgumentOutOfRangeException(nameof(tempo));
@@ -70,11 +70,20 @@ Rules:
             .AppendLine($"Tempo: {tempo}")
             .AppendLine($"Meter: {meter}")
             .AppendLine($"Approximate total length: {targetBars} bars")
-            .AppendLine($"Anchored Harmonic Divergence: {(useAhd ? "enabled" : "disabled")}")
-            .ToString();
+            .AppendLine($"Anchored Harmonic Divergence: {(useAhd ? "enabled" : "disabled")}");
+
+        if (!string.IsNullOrWhiteSpace(existingComposerOverview))
+        {
+            user.AppendLine()
+                .AppendLine("EXISTING SONG COMPOSER OVERVIEW")
+                .AppendLine("This request modifies an existing song. Preserve the established musical identity below unless the new request explicitly asks to change it. Use it when deciding section roles, recurring/answering/countering material, harmony, and payoff strategy; do not copy its notation into the producer outline.")
+                .AppendLine(existingComposerOverview.Length > 24000 ? existingComposerOverview[..24000] : existingComposerOverview);
+        }
+
+        string userText = user.ToString();
 
         string design = (await model.CompleteTextStreamingAsync(
-            [new ChatMessage("system", system), new ChatMessage("user", user)],
+            [new ChatMessage("system", system), new ChatMessage("user", userText)],
             "SongDesign",
             null,
             token).ConfigureAwait(false)).Trim();

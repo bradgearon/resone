@@ -18,6 +18,7 @@ public static class LauncherBootstrap
   var start=new ProcessStartInfo(exe){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=root};
   start.ArgumentList.Add("--no-ui");
   start.Environment["RESONE_HOME"]=root;
+  start.Environment[AiRuntimeRoot.EnvironmentVariable]=AiRuntimeRoot.Resolve();
   using var child=Process.Start(start);
   using var pipe=new NamedPipeClientStream(".",PipeName,PipeDirection.InOut,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly);
   using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(TimeSpan.FromMinutes(30));

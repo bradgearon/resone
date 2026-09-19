@@ -75,19 +75,46 @@ static float vocalSample(const PcmWav &wav, int channel, double sourceFrame) {
 }
 }
 AudioEngine::AudioEngine(std::filesystem::path home, std::function<void(Json)> emit)
-    : home_(std::move(home)), emit_(std::move(emit)), worker_([this] { run(); }) {}
+    : home_(std::move(home)), emit_(std::move(emit)), worker_([this] { run(); }) {
+    for (auto &gain : laneGain_) gain.store(1.0f);
+}
 AudioEngine::~AudioEngine() {
     quitting_ = true;
     signal();
     worker_.join();
 }
-void AudioEngine::play(Song song) {
+void AudioEngine::play(Song song, double startSeconds, bool paused) {
+    bool anySolo = std::any_of(song.lanes.begin(), song.lanes.end(), [](const auto &lane) { return lane.solo; });
+    for (size_t i = 0; i < laneGain_.size(); ++i) {
+        float gain = 0.0f;
+        if (i < song.lanes.size()) {
+            const auto &lane = song.lanes[i];
+            gain = (!lane.muted && (!anySolo || lane.solo)) ? static_cast<float>(lane.volume) : 0.0f;
+        }
+        laneGain_[i].store(std::clamp(gain, 0.0f, 1.0f), std::memory_order_relaxed);
+    }
     std::lock_guard lock(mutex_);
     generation_.fetch_add(1);
-    pending_ = std::move(song);
+    pending_ = PlayRequest{std::move(song), std::max(0.0, startSeconds), paused};
     playing_ = false;
-    paused_ = false;
-    consumed_ = 0;
+    paused_ = paused;
+    consumed_ = static_cast<uint64_t>(std::llround(std::max(0.0, startSeconds) * requestedRate_.load()));
+    signal();
+}
+void AudioEngine::mixer(const Json &state) {
+    if (!state.is_object() || !state.contains("lanes") || !state.at("lanes").is_array()) return;
+    const auto &lanes = state.at("lanes");
+    bool anySolo = false;
+    for (const auto &lane : lanes) anySolo = anySolo || lane.value("solo", false);
+    for (size_t i = 0; i < laneGain_.size(); ++i) {
+        float gain = 0.0f;
+        if (i < lanes.size()) {
+            const auto &lane = lanes[i];
+            const bool audible = !lane.value("muted", false) && (!anySolo || lane.value("solo", false));
+            gain = audible ? static_cast<float>(lane.value("volume", 0.8)) : 0.0f;
+        }
+        laneGain_[i].store(std::clamp(gain, 0.0f, 1.0f), std::memory_order_relaxed);
+    }
     signal();
 }
 void AudioEngine::stop() {
@@ -167,6 +194,8 @@ void AudioEngine::run() {
         emit_({{"op", "instruments"}, {"payload", font->presets()}});
         while (!quitting_) {
             Song song;
+            double startSeconds = 0.0;
+            bool startPaused = false;
             uint64_t gen;
             for (;;) {
                 auto serial = wakeSerial_.load();
@@ -175,8 +204,11 @@ void AudioEngine::run() {
                     if (quitting_)
                         return;
                     if (pending_) {
-                        song = std::move(*pending_);
+                        auto request = std::move(*pending_);
                         pending_.reset();
+                        song = std::move(request.song);
+                        startSeconds = request.startSeconds;
+                        startPaused = request.paused;
                         gen = generation_;
                         break;
                     }
@@ -195,20 +227,17 @@ void AudioEngine::run() {
                     bool on;
                 };
                 std::vector<Event> events;
-                struct VocalTrack { PcmWav wav; float volume{}; };
+                struct VocalTrack { PcmWav wav; int laneIndex{}; };
                 std::vector<VocalTrack> vocalTracks;
-                bool solo = std::any_of(song.lanes.begin(), song.lanes.end(), [](auto &l) { return l.solo; });
                 int channel = 0;
                 for (auto &lane : song.lanes) {
                     int c = channel++;
-                    if (lane.volume == 0 || lane.muted || (solo && !lane.solo))
-                        continue;
                     bool renderedVocal = false;
                     if (lane.vocals && !lane.renderedVocalPath.empty()) {
                         try {
                             auto wav = loadPcm16Wav(std::filesystem::path(lane.renderedVocalPath));
                             nativeAudioLog(home_, "Loaded rendered vocal: " + lane.renderedVocalPath + "; seconds=" + std::to_string(wav.seconds()));
-                            vocalTracks.push_back({std::move(wav), float(lane.volume)});
+                            vocalTracks.push_back({std::move(wav), c});
                             renderedVocal = true;
                         } catch (const std::exception &e) {
                             nativeAudioLog(home_, std::string("Rendered vocal load failed; using MIDI preview: ") + e.what());
@@ -218,7 +247,7 @@ void AudioEngine::run() {
                     font->program(c, lane.drums ? 128 : lane.bank, lane.program);
                     for (auto &n : lane.notes) {
                         events.push_back({llround(n.start * 60 / song.tempo * rate), c, n.pitch,
-                                          std::clamp(int(n.velocity * lane.volume), 1, 127), true});
+                                          std::clamp(n.velocity, 1, 127), true});
                         events.push_back(
                             {llround((n.start + n.duration) * 60 / song.tempo * rate), c, n.pitch, 0, false});
                     }
@@ -232,7 +261,54 @@ void AudioEngine::run() {
                 size_t next = 0;
                 constexpr int block = 1024;
                 float audio[block * 2];
-                bool announced = false, lastPlaying = false, lastPaused = false;
+                bool announced = false, lastPlaying = false, lastPaused = !startPaused;
+                std::array<int, 16> appliedVolume{}; appliedVolume.fill(-1);
+                auto applyMixer = [&] {
+                    for (int c = 0; c < std::min<int>(channel, static_cast<int>(laneGain_.size())); ++c) {
+                        const float gain = laneGain_[c].load(std::memory_order_relaxed);
+                        const int midiVolume = std::clamp(static_cast<int>(std::lround(gain * 127.0f)), 0, 127);
+                        if (appliedVolume[c] != midiVolume) { font->volume(c, gain); appliedVolume[c] = midiVolume; }
+                    }
+                };
+                auto renderBlock = [&](int n, bool mixVocals) {
+                    applyMixer();
+                    int offset = 0;
+                    while (offset < n) {
+                        while (next < events.size() && events[next].frame <= frame + offset) {
+                            auto &e = events[next++];
+                            if (e.on) font->on(e.channel, e.pitch, e.velocity); else font->off(e.channel, e.pitch);
+                        }
+                        int part = n - offset;
+                        if (next < events.size()) part = std::min(part, int(events[next].frame - frame - offset));
+                        if (part <= 0) { offset++; continue; }
+                        font->render(audio + offset * 2, part);
+                        if (mixVocals && !vocalTracks.empty()) {
+                            for (int k = 0; k < part; ++k) {
+                                const int64_t outputFrame = frame + offset + k;
+                                float vl = 0, vr = 0;
+                                for (const auto &v : vocalTracks) {
+                                    const double sourceFrame = outputFrame * (double(v.wav.sampleRate) / rate);
+                                    const float gain = laneGain_[std::clamp(v.laneIndex, 0, int(laneGain_.size() - 1))].load(std::memory_order_relaxed);
+                                    vl += vocalSample(v.wav, 0, sourceFrame) * gain;
+                                    vr += vocalSample(v.wav, 1, sourceFrame) * gain;
+                                }
+                                audio[(offset + k) * 2] += vl;
+                                audio[(offset + k) * 2 + 1] += vr;
+                            }
+                        }
+                        offset += part;
+                    }
+                };
+                const int64_t startFrame = std::clamp<int64_t>(llround(startSeconds * rate), 0, end);
+                playing_ = false;
+                paused_ = startPaused;
+                // Fast-forward the synth state so notes that began before the seek point continue naturally.
+                while (frame < startFrame && !quitting_ && gen == generation_) {
+                    const int n = static_cast<int>(std::min<int64_t>(block, startFrame - frame));
+                    renderBlock(n, false);
+                    frame += n;
+                }
+                consumed_ = static_cast<uint64_t>(frame);
                 auto began = std::chrono::steady_clock::now();
                 auto report = [&] {
                     bool p = playing_, pause = paused_;
@@ -251,52 +327,22 @@ void AudioEngine::run() {
                     while (!quitting_ && gen == generation_) {
                         auto serial = wakeSerial_.load();
                         report();
-                        if (write_ - read_ < static_cast<uint64_t>(rate / 2))
-                            break;
+                        if (write_ - read_ < static_cast<uint64_t>(std::max(1024, rate / 8))) break;
                         wakeSerial_.wait(serial);
                     }
-                    if (quitting_ || gen != generation_)
-                        break;
+                    if (quitting_ || gen != generation_) break;
                     report();
-                    int n = static_cast<int>(std::min<int64_t>(block, end - frame)), offset = 0;
-                    while (offset < n) {
-                        while (next < events.size() && events[next].frame <= frame + offset) {
-                            auto &e = events[next++];
-                            if (e.on)
-                                font->on(e.channel, e.pitch, e.velocity);
-                            else
-                                font->off(e.channel, e.pitch);
-                        }
-                        int part = n - offset;
-                        if (next < events.size())
-                            part = std::min(part, int(events[next].frame - frame - offset));
-                        font->render(audio + offset * 2, part);
-                        if (!vocalTracks.empty()) {
-                            for (int k = 0; k < part; ++k) {
-                                const int64_t outputFrame = frame + offset + k;
-                                float vl = 0, vr = 0;
-                                for (const auto &v : vocalTracks) {
-                                    const double sourceFrame = outputFrame * (double(v.wav.sampleRate) / rate);
-                                    vl += vocalSample(v.wav, 0, sourceFrame) * v.volume;
-                                    vr += vocalSample(v.wav, 1, sourceFrame) * v.volume;
-                                }
-                                audio[(offset + k) * 2] += vl;
-                                audio[(offset + k) * 2 + 1] += vr;
-                            }
-                        }
-                        offset += part;
-                    }
+                    const int n = static_cast<int>(std::min<int64_t>(block, end - frame));
+                    renderBlock(n, true);
                     auto w = write_.load(std::memory_order_relaxed);
-                    for (int i = 0; i < n; i++)
-                        ring_[(w + i) % Capacity] = {audio[i * 2], audio[i * 2 + 1], gen};
+                    for (int i = 0; i < n; i++) ring_[(w + i) % Capacity] = {audio[i * 2], audio[i * 2 + 1], gen};
                     write_.store(w + n, std::memory_order_release);
                     frame += n;
                     if (!announced) {
-                        double seconds =
-                            std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
+                        double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
                         startFrames_ = int(rate * (seconds < .02 ? .05 : .25));
                         announced = true;
-                        emit_({{"op", "transport"}, {"payload", {{"state", "buffering"}, {"seconds", 0}}}});
+                        emit_({{"op", "transport"}, {"payload", {{"state", startPaused ? "paused" : "buffering"}, {"seconds", double(consumed_) / rate}}}});
                     }
                 }
                 if (gen != generation_)

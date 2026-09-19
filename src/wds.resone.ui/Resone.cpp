@@ -174,6 +174,12 @@ bool Resone::OnMessage(int tag, int, int size, const void *data) {
         auto j = Json::parse(static_cast<const char *>(data), static_cast<const char *>(data) + size);
         auto op = j.at("op").get<std::string>();
         auto p = j.value("payload", Json::object());
+        if (op == "uiDiagnostic") {
+            const auto message = p.value("message", std::string("UI diagnostic"));
+            const auto stack = p.value("stack", std::string{});
+            resone::appendDailyLog("UI", stack.empty() ? message : message + " | " + stack);
+            return true;
+        }
         if (op == "ready") {
             ready_ = true;
             emit({{"op", "settings"}, {"payload", settings_}});
@@ -220,8 +226,17 @@ bool Resone::OnMessage(int tag, int, int size, const void *data) {
             resone::dragMidiBytes(api_->exportProjectMidi(p.at("project")), true);
             emit({{"op", "midiDragFinished"}});
         } else if (op == "play") {
-            project_ = p;
-            audio_->play(resone::parseSong(p));
+            const bool wrapped = p.is_object() && p.contains("project");
+            project_ = wrapped ? p.at("project") : p;
+            const double startSeconds = wrapped ? p.value("startSeconds", 0.0) : 0.0;
+            const bool paused = wrapped ? p.value("paused", false) : false;
+            audio_->play(resone::parseSong(project_), startSeconds, paused);
+        } else if (op == "seek") {
+            if (p.is_object() && p.contains("project")) project_ = p.at("project");
+            if (project_.is_null()) throw std::runtime_error("Nothing is loaded to seek.");
+            audio_->play(resone::parseSong(project_), p.value("startSeconds", 0.0), p.value("paused", false));
+        } else if (op == "mixer") {
+            audio_->mixer(p);
         } else if (op == "pause")
             audio_->pause(p.get<bool>());
         else if (op == "stop") {

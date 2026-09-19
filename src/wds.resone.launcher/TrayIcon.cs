@@ -5,13 +5,14 @@ internal sealed class TrayIcon(Action open,Func<Task> toggle,Action exit):IDispo
 {
  private Thread? thread;private nint window;private readonly string className="Wds.Resone.Tray."+Environment.ProcessId;
  private WndProc? callback;
- public void Status(string text){if(window==0)return;var tip=text.Length>127?text[..127]:text;var data=new Notify{size=(uint)Marshal.SizeOf<Notify>(),window=window,id=1,flags=4,tip=tip,info="",title=""};Shell_NotifyIconW(1,ref data);}
+ public void Status(string text){if(window==0)return;var tip=text.Length>127?text[..127]:text;var data=new NotifyIconData{size=(uint)Marshal.SizeOf<NotifyIconData>(),window=window,id=1,flags=4,tip=tip,info="",title=""};Shell_NotifyIconW(1,ref data);}
+ public void Notify(string title,string text,bool error=false){if(window==0)return;var data=new NotifyIconData{size=(uint)Marshal.SizeOf<NotifyIconData>(),window=window,id=1,flags=0x10,tip="Resone — music services",info=text.Length>255?text[..255]:text,title=title.Length>63?title[..63]:title,infoFlags=error?3u:1u};Shell_NotifyIconW(1,ref data);}
  public void Start(){if(!OperatingSystem.IsWindows())return;thread=new Thread(Run){IsBackground=true,Name="Resone tray"};thread.SetApartmentState(ApartmentState.STA);thread.Start();}
  private void Run(){
   callback=Proc;var wc=new WindowClass{proc=callback,instance=GetModuleHandle(null),name=className};RegisterClassW(ref wc);
   window=CreateWindowExW(0,className,"Resone",0,0,0,0,0,0,0,wc.instance,0);
   if(window==0)return;
-  var icon=new Notify{size=(uint)Marshal.SizeOf<Notify>(),window=window,id=1,flags=7,message=0x8001,icon=LoadImageW(0,Path.Combine(AppContext.BaseDirectory,"Resone.ico"),1,32,32,0x10),tip="Resone — music services",info="",title=""};Shell_NotifyIconW(0,ref icon);
+  var icon=new NotifyIconData{size=(uint)Marshal.SizeOf<NotifyIconData>(),window=window,id=1,flags=7,message=0x8001,icon=LoadImageW(0,Path.Combine(AppContext.BaseDirectory,"Resone.ico"),1,32,32,0x10),tip="Resone — music services",info="",title=""};Shell_NotifyIconW(0,ref icon);
   while(GetMessageW(out var msg,0,0,0)>0){TranslateMessage(ref msg);DispatchMessageW(ref msg);}
   Shell_NotifyIconW(2,ref icon);if(icon.icon!=0)DestroyIcon(icon.icon);DestroyWindow(window);window=0;UnregisterClassW(className,wc.instance);
  }
@@ -26,7 +27,7 @@ internal sealed class TrayIcon(Action open,Func<Task> toggle,Action exit):IDispo
  public void Dispose(){if(window!=0)PostMessageW(window,0x10,0,0);thread?.Join(TimeSpan.FromSeconds(2));}
  [UnmanagedFunctionPointer(CallingConvention.Winapi)] private delegate nint WndProc(nint w,uint m,nuint wp,nint lp);
  [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]private struct WindowClass{public uint style;public WndProc proc;public int clsExtra,winExtra;public nint instance,icon,cursor,background;public string? menu;public string name;}
- [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]private struct Notify{public uint size;public nint window;public uint id,flags,message;public nint icon;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)]public string tip;public uint state,stateMask;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=256)]public string info;public uint timeout;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=64)]public string title;public uint infoFlags;public Guid guid;public nint balloon;}
+ [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]private struct NotifyIconData{public uint size;public nint window;public uint id,flags,message;public nint icon;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)]public string tip;public uint state,stateMask;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=256)]public string info;public uint timeout;[MarshalAs(UnmanagedType.ByValTStr,SizeConst=64)]public string title;public uint infoFlags;public Guid guid;public nint balloon;}
  [StructLayout(LayoutKind.Sequential)]private struct Point{public int x,y;}
  [StructLayout(LayoutKind.Sequential)]private struct Message{public nint hwnd;public uint message;public nuint wParam;public nint lParam;public uint time;public Point pt;public uint privateValue;}
  [DllImport("kernel32",CharSet=CharSet.Unicode)]private static extern nint GetModuleHandle(string? name);
@@ -42,7 +43,7 @@ internal sealed class TrayIcon(Action open,Func<Task> toggle,Action exit):IDispo
  [DllImport("user32")]private static extern void PostQuitMessage(int code);
  [DllImport("user32",CharSet=CharSet.Unicode)]private static extern nint LoadImageW(nint instance,string path,uint type,int width,int height,uint flags);
  [DllImport("user32")]private static extern bool DestroyIcon(nint icon);
- [DllImport("shell32",CharSet=CharSet.Unicode)]private static extern bool Shell_NotifyIconW(uint action,ref Notify data);
+ [DllImport("shell32",CharSet=CharSet.Unicode)]private static extern bool Shell_NotifyIconW(uint action,ref NotifyIconData data);
  [DllImport("user32")]private static extern nint CreatePopupMenu();
  [DllImport("user32",CharSet=CharSet.Unicode)]private static extern bool AppendMenuW(nint menu,uint flags,nuint id,string text);
  [DllImport("user32")]private static extern bool GetCursorPos(out Point p);

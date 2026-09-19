@@ -21,7 +21,9 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
         if (string.IsNullOrWhiteSpace(description) || description.Length > 12000)
             throw new ArgumentException("Describe the music in 1–12000 characters.");
         bool useAhd = !payload.TryGetProperty("useAhd", out var ahd) || ahd.GetBoolean();
-        return await new ArrangementComposer(http, settings, assetsRoot).ComposeAsync(project, laneId, description, useAhd, token, progress);
+        string composerOverview = payload.TryGetProperty("composerOverview", out var overviewValue) ? overviewValue.GetString() ?? "" : "";
+        if (composerOverview.Length > 24000) composerOverview = composerOverview[..24000];
+        return await new ArrangementComposer(http, settings, assetsRoot).ComposeAsync(project, laneId, description, useAhd, composerOverview, token, progress);
     }
 
 
@@ -34,14 +36,25 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
         string meter = payload.TryGetProperty("meter", out var meterValue) ? meterValue.GetString() ?? "4/4" : "4/4";
         int targetBars = payload.TryGetProperty("targetBars", out var barsValue) ? barsValue.GetInt32() : 96;
         bool useAhd = !payload.TryGetProperty("useAhd", out var ahdValue) || ahdValue.GetBoolean();
+        bool composerDesignPass = !payload.TryGetProperty("composerDesignPass", out var composerDesignValue) || composerDesignValue.GetBoolean();
+        string existingComposerOverview = payload.TryGetProperty("composerOverview", out var existingOverviewValue) ? existingOverviewValue.GetString() ?? "" : "";
+        if (existingComposerOverview.Length > 24000) existingComposerOverview = existingComposerOverview[..24000];
         if (!ResonatorNotationValidator.IsMeter(meter)) throw new ArgumentException("Invalid song meter.");
         if (progress is not null) await progress("Song · Producing outline…").ConfigureAwait(false);
         ILocalChatModelClient client = settings.LocalInferenceEnabled ? new NativeChatClient(settings) : new LocalAiClient(http, settings);
-        string design = await SongCompositionDesigner.CreateAsync(client, description, tempo, meter, targetBars, useAhd, token).ConfigureAwait(false);
-        var state = SongGenerationProvisioner.Create(description, design, tempo, meter, targetBars);
+        string design = await SongCompositionDesigner.CreateAsync(client, description, tempo, meter, targetBars, useAhd, existingComposerOverview, token).ConfigureAwait(false);
+        string composerDesign = existingComposerOverview;
+        if (composerDesignPass)
+        {
+            if (progress is not null) await progress("Song · Composer design pass · motifs, harmony, and responses…").ConfigureAwait(false);
+            composerDesign = await SongComposerDesignPass.CreateAsync(
+                client, assetsRoot, description, design, tempo, meter, targetBars, useAhd, existingComposerOverview, token).ConfigureAwait(false);
+        }
+        var state = SongGenerationProvisioner.Create(description, design, tempo, meter, targetBars, composerDesign);
         return new JsonObject
         {
             ["design"] = design,
+            ["composerDesign"] = composerDesign,
             ["title"] = state.Title,
             ["state"] = JsonSerializer.SerializeToNode(state, ResoneJson.Default.SongGenerationState)
         };

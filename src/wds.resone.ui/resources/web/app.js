@@ -11,6 +11,7 @@ globalThis.LaneNotation = (() => {
         })).sort((a,b) => a.start-b.start || a.length-b.length || a.velocity-b.velocity || a.pitch-b.pitch);
         if (!events.length) return '';
         const out = [`tempo=${tempo} ${meter}`];
+        if (lane.key) out.push('key=' + lane.key);
         if (lane.drums) out.push('mode=drums');
         let cursor = 0;
         function advance(ticks, symbol) {
@@ -139,6 +140,18 @@ globalThis.MidiImport = (() => {
 'use strict';
 const $ = id => document.getElementById(id),
       colors = [ '#f58dc9', '#57c9dc', '#a292f3', '#ffad76', '#76dfa7', '#ffda7d' ];
+
+// Install the UI crash reporter before any DOM bindings below. A startup exception
+// must be visible and must reach the shared daily Resone log even when the normal
+// ready handshake never happens.
+function reportUiFault(kind, value) {
+    const error = value instanceof Error ? value : new Error(String(value ?? 'Unknown UI error'));
+    const message = kind + ': ' + (error.message || error);
+    try { if ($('status')) $('status').textContent = 'UI startup error · ' + (error.message || error); } catch {}
+    try { send('uiDiagnostic', {kind, message, stack: String(error.stack || '')}); } catch {}
+}
+window.addEventListener('error', e => reportUiFault('window.error', e.error || e.message));
+window.addEventListener('unhandledrejection', e => reportUiFault('unhandledrejection', e.reason));
 const roles = [ 'Melody', 'Bass', 'Chords', 'Drums', 'Guitar', 'Strings', 'Vocals' ],
       glyphs = [ '♪', '𝄢', '≡', '▤', '✦', '△', '♬' ];
 const newWorkspaceId = () => crypto.randomUUID().replaceAll('-', '');
@@ -163,6 +176,8 @@ const fresh = () => ({
                           renderedVocalPath : '',
                           renderedVocalSignature : '',
                           vocalGuidance : [],
+                          key : '',
+                          keyRegions : [],
                           notation : '',
                           originalBrief : '',
                           clipLengthBeats : 0,
@@ -171,26 +186,27 @@ const fresh = () => ({
                       }))
 });
 let song = fresh(), selected = song.lanes[0].id, presets = [], history = [], undo = [], redo = [],
-    pending = null, songRun = null, recording = false, transport = 'stopped', anchor = 0, anchorTime = 0, zoom = 28,
-    drag = null, savedVoices = [], previewMelodies = [], workspaceSongs = [], workspaceId = newWorkspaceId(),
-    workspaceTitle = 'Untitled Song', workspaceProducerDesign = '', workspaceBootstrapped = false, workspaceLoadRequest = '',
+    pending = null, songRun = null, recording = false, transport = 'stopped', anchor = 0, anchorTime = 0, zoom = 28, verticalZoom = 1,
+    drag = null, selectedNote = null, laneHeightPrefs = {}, laneZoomYPrefs = {}, editorBeat = 0, savedVoices = [], previewMelodies = [], workspaceSongs = [], workspaceId = newWorkspaceId(),
+    workspaceTitle = 'Untitled Song', workspaceProducerDesign = '', workspaceComposerOverview = '', workspaceBootstrapped = false, workspaceLoadRequest = '',
     workspaceView = 'history', workspaceSaveTimer = 0, workspaceHistoryVersion = 0, workspaceHistorySavedVersion = 0,
-    workspaceProducerVersion = 0, workspaceProducerSavedVersion = 0, workspaceSaveRequests = new Map(), voicePreview = null, voiceAudio = null;
+    workspaceProducerVersion = 0, workspaceProducerSavedVersion = 0, workspaceComposerVersion = 0, workspaceComposerSavedVersion = 0, workspaceSaveRequests = new Map(), voicePreview = null, voiceAudio = null;
 const DEFAULT_VOICE_SAMPLE_TEXT = "Thank you for using Resone by We Develop Software, I can't wait to hear what you create.";
+const VOCAL_SOURCE_OOHS = '__oohs__', VOCAL_SOURCE_NEW = '__new_voice__', VOCAL_OOHS_PROGRAM = 53;
+function savedVoice(id) { return savedVoices.find(v => v.id === id); }
+function vocalSourceValue(l) { return l?.voiceId && savedVoice(l.voiceId) ? 'voice:' + l.voiceId : VOCAL_SOURCE_OOHS; }
 function setVoiceLibrary(payload) {
     savedVoices = Array.isArray(payload?.voices) ? payload.voices.filter(v => v?.id && v?.name) : [];
     previewMelodies = Array.isArray(payload?.previewMelodies) ? payload.previewMelodies : previewMelodies;
-    const select = $('vocalVoice');
-    if (select) {
-        const active = lane()?.voiceId || payload?.lastSelectedVoiceId || '';
-        select.replaceChildren();
-        if (!savedVoices.length) select.add(new Option('Create a voice…', ''));
-        for (const v of savedVoices) select.add(new Option(v.name, v.id));
-        const chosen = savedVoices.some(v => v.id === active) ? active
-            : savedVoices.some(v => v.id === payload?.lastSelectedVoiceId) ? payload.lastSelectedVoiceId
-            : savedVoices[0]?.id || '';
-        if (chosen) select.value = chosen;
-        for (const l of song.lanes) if (l.vocals && (!l.voiceId || l.voiceId === 'default' || !savedVoices.some(v => v.id === l.voiceId))) l.voiceId = chosen;
+    // A vocal lane with no voiceId deliberately means the built-in Oohs MIDI source.
+    // Keep that choice stable instead of silently assigning the first saved voice.
+    for (const l of song.lanes) {
+        if (!l.vocals) continue;
+        if (l.voiceId === 'default' || (l.voiceId && !savedVoices.some(v => v.id === l.voiceId))) {
+            l.voiceId = '';
+            l.renderedVocalPath = '';
+            l.renderedVocalSignature = '';
+        }
     }
     const melody = $('voicePreviewMelody');
     if (melody && previewMelodies.length) {
@@ -202,6 +218,79 @@ function setVoiceLibrary(payload) {
 }
 const clone = x => JSON.parse(JSON.stringify(x)),
       lane = () => song.lanes.find(l => l.id === selected) || song.lanes[0];
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const DEFAULT_LANE_HEIGHT = 92, MIN_LANE_HEIGHT = 70, MAX_LANE_HEIGHT = 260, MIN_VERTICAL_ZOOM = .55, MAX_VERTICAL_ZOOM = 6;
+function noteName(pitch) { return NOTE_NAMES[((pitch % 12) + 12) % 12] + (Math.floor(pitch / 12) - 1); }
+function notationKey(notation) {
+    const m=String(notation||'').match(/(?:^|\s)key=([A-Ga-g](?:#|b)?(?:maj|min|m)?)(?=\s|\||$)/i);
+    return m ? m[1].replace(/^([a-g])/i,x=>x.toUpperCase()).replace(/min$/i,'m').replace(/maj$/i,'') : '';
+}
+function keySpec(value) {
+    const raw=String(value||'').trim(); if(!raw) return null;
+    const m=raw.match(/^([A-Ga-g])([#b]?)(m)?$/); if(!m) return null;
+    const natural={C:0,D:2,E:4,F:5,G:7,A:9,B:11}[m[1].toUpperCase()];
+    const tonic=(natural+(m[2]==='#'?1:m[2]==='b'?-1:0)+12)%12, minor=!!m[3];
+    const steps=minor?[0,2,3,5,7,8,10]:[0,2,4,5,7,9,11];
+    return {key:raw,tonic,minor,pitches:new Set(steps.map(x=>(x+tonic)%12)),tonicName:NOTE_NAMES[tonic]};
+}
+function keyAt(l, beat=editorBeat) {
+    const regions=Array.isArray(l?.keyRegions)?l.keyRegions:[];
+    const r=regions.find(x=>Number(x.start)<=beat && beat<Number(x.end));
+    return String(r?.key || l?.key || notationKey(l?.notation) || '');
+}
+function rememberNotationKey(l, notation, start=0, end=null) {
+    const key=notationKey(notation); if(!key) return;
+    l.key = l.key || key;
+    if(end == null) { l.key=key; l.keyRegions=[{start:0,end:Math.max(duration(),song.bars*beatsPerBar()),key}]; return; }
+    const a=Math.max(0,Number(start)||0), b=Math.max(a,Number(end)||a);
+    l.keyRegions=(Array.isArray(l.keyRegions)?l.keyRegions:[]).filter(r=>Number(r.end)<=a || Number(r.start)>=b);
+    l.keyRegions.push({start:a,end:b,key}); l.keyRegions.sort((x,y)=>Number(x.start)-Number(y.start));
+}
+function laneBaseHeight(l) { return Math.max(MIN_LANE_HEIGHT,Math.min(MAX_LANE_HEIGHT,Number(laneHeightPrefs[l?.name])||DEFAULT_LANE_HEIGHT)); }
+function laneHorizontalZoom() {
+    return Math.max(8,Math.min(220,Number.isFinite(Number(zoom))?Number(zoom):28));
+}
+function laneVerticalZoom(l=lane()) {
+    const value=Number(laneZoomYPrefs[l?.id]);
+    return Math.max(MIN_VERTICAL_ZOOM,Math.min(MAX_VERTICAL_ZOOM,Number.isFinite(value)?value:verticalZoom));
+}
+function laneHeight(l) { return Math.max(MIN_LANE_HEIGHT, Math.round(laneBaseHeight(l)*laneVerticalZoom(l))); }
+function syncZoomControls() {
+    if ($('zoom')) $('zoom').value=laneHorizontalZoom();
+    if ($('zoomY')) $('zoomY').value=laneVerticalZoom();
+}
+function saveEditorPreferences() {
+    try {
+        // Horizontal zoom is global across the roll; vertical zoom remains lane-local.
+        localStorage.setItem('resone.pianoRoll.zoomX', String(zoom));
+        localStorage.setItem('resone.pianoRoll.zoomY', String(verticalZoom));
+        localStorage.removeItem('resone.pianoRoll.laneZoomX');
+        localStorage.setItem('resone.pianoRoll.laneZoomY', JSON.stringify(laneZoomYPrefs));
+        localStorage.setItem('resone.pianoRoll.laneHeights', JSON.stringify(laneHeightPrefs));
+    } catch {}
+}
+function laneMetrics() {
+    let y=26; return song.lanes.map((l,i)=>{ const height=laneHeight(l), m={lane:l,index:i,top:y,height}; y+=height; return m; });
+}
+function metricAtY(y) { return laneMetrics().find(m=>y>=m.top && y<m.top+m.height) || null; }
+function sendLiveMixer() {
+    send('mixer',{lanes:song.lanes.map(l=>({id:l.id,volume:Number(l.volume)||0,muted:!!l.muted,solo:!!l.solo}))});
+}
+function persistLiveMixer(renderUi=true) {
+    send('project',song); scheduleWorkspaceSave(); if(renderUi) render();
+}
+function seekBeat(beat, preserveTransport=true) {
+    const end=Math.max(duration(),song.bars*beatsPerBar()), clamped=Math.max(0,Math.min(end,Number(beat)||0));
+    editorBeat=clamped; anchor=clamped*60/song.tempo; anchorTime=performance.now();
+    if(preserveTransport && ['playing','paused','buffering'].includes(transport))
+        send('seek',{project:clone(song),startSeconds:anchor,paused:transport==='paused'});
+    updateSelectedKeyBadge();
+}
+function updateSelectedKeyBadge() {
+    const k=keyAt(lane(),editorBeat), spec=keySpec(k), text=spec ? `Key ${k} · tonic ${spec.tonicName}` : 'Key —';
+    const badge=document.querySelector('.lane.selected .laneKeyBadge'); if(badge) badge.textContent=text;
+    if ($('rollKey')) $('rollKey').textContent=text;
+}
 function normalizedWorkspaceTitle(value) {
     const t = String(value || '').replace(/\s+/g, ' ').trim();
     return (t || 'Untitled Song').slice(0, 120);
@@ -236,12 +325,15 @@ function saveWorkspace(force=false) {
     if (!force && !song.started && !history.length && workspaceTitle === 'Untitled Song') return;
     clearTimeout(workspaceSaveTimer);
     const payload={id:workspaceId,title:workspaceTitle,project:song};
-    const ack={historyVersion:null,producerVersion:null};
+    const ack={historyVersion:null,producerVersion:null,composerVersion:null};
     if (workspaceHistoryVersion !== workspaceHistorySavedVersion) {
         payload.history=workspaceHistoryPayload(); ack.historyVersion=workspaceHistoryVersion;
     }
     if (workspaceProducerVersion !== workspaceProducerSavedVersion) {
         payload.producerDesign=workspaceProducerDesign; ack.producerVersion=workspaceProducerVersion;
+    }
+    if (workspaceComposerVersion !== workspaceComposerSavedVersion) {
+        payload.composerDesign=workspaceComposerOverview; ack.composerVersion=workspaceComposerVersion;
     }
     const id=crypto.randomUUID(); workspaceSaveRequests.set(id,ack); send('workspaceSave',payload,id);
 }
@@ -280,9 +372,9 @@ function loadWorkspaceSong(id) {
 }
 function createNewWorkspaceSong(forceSave=false) {
     if (forceSave) saveWorkspace(true);
-    send('stop'); song=fresh(); selected=song.lanes[0].id; history=[]; undo=[]; redo=[]; songRun=null;
-    workspaceId=newWorkspaceId(); workspaceTitle='Untitled Song'; workspaceProducerDesign='';
-    workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceSaveRequests.clear();
+    send('stop'); song=fresh(); selected=song.lanes[0].id; selectedNote=null; editorBeat=0; anchor=0; history=[]; undo=[]; redo=[]; songRun=null;
+    workspaceId=newWorkspaceId(); workspaceTitle='Untitled Song'; workspaceProducerDesign=''; workspaceComposerOverview='';
+    workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceComposerVersion=workspaceComposerSavedVersion=0; workspaceSaveRequests.clear();
     $('brief').value=''; updateSongIdentity(); renderHistory(); renderSongList(); commit();
     status('New song. Describe your first idea.');
 }
@@ -312,6 +404,8 @@ function normalizeLaneAiDefaults(project) {
         if (typeof l.renderedVocalPath !== 'string') l.renderedVocalPath = '';
         if (typeof l.renderedVocalSignature !== 'string') l.renderedVocalSignature = '';
         if (!Array.isArray(l.vocalGuidance)) l.vocalGuidance = [];
+        if (typeof l.key !== 'string') l.key = '';
+        if (!Array.isArray(l.keyRegions)) l.keyRegions = [];
     });
     return project;
 }
@@ -344,7 +438,7 @@ function checkpoint() {
 function changed() {
     invalidateVocalRenders();
     send('stop');
-    transport = 'stopped';
+    transport = 'stopped'; anchor=0; editorBeat=0;
     commit();
 }
 function beatsPerBar() {
@@ -378,10 +472,10 @@ function busy() {
     $('restart').disabled = b;
     $('clear').disabled = b || recording;
     if ($('saveNew')) $('saveNew').disabled = b || recording;
-    if ($('newVoice')) $('newVoice').disabled = b || recording;
     if ($('deleteSong')) $('deleteSong').disabled = b || recording;
     $('songMode').disabled = b || recording;
-    if ($('renderVocals')) $('renderVocals').disabled = b || recording || !lane()?.vocals || !(lane()?.notes?.length) || !lane()?.voiceId || !savedVoices.some(v=>v.id===lane().voiceId); 
+    if ($('composerDesignPass')) $('composerDesignPass').disabled = b || recording;
+    if ($('renderVocals')) $('renderVocals').disabled = b || recording || !lane()?.vocals || !(lane()?.notes?.length) || !savedVoice(lane()?.voiceId); 
     for (const control of document.querySelectorAll('.laneActions input')) control.disabled = b;
     for (const control of document.querySelectorAll('.laneActions button')) control.disabled = b || song.lanes.length === 1;
 }
@@ -406,8 +500,8 @@ function requestMusic(text) {
         // Keep the revision context in the request, but not in the active view/audio.
         for (const l of song.lanes) if (includedIds.includes(l.id)) Object.assign(l, {notes : [], notation : ''});
         render();
-        send('compose', {project : requestProject, laneId : selected, description : text, useAhd : $('ahd').checked},
-             id);
+        send('compose', {project : requestProject, laneId : selected, description : text, useAhd : $('ahd').checked,
+            composerOverview : (typeof workspaceComposerOverview !== 'undefined' ? workspaceComposerOverview : '')}, id);
         const target = previous.lanes.find(l => l.id === selected);
         status((target.notes.length ? 'Updating ' : 'Creating ') + target.name + '…');
         busy();
@@ -435,8 +529,12 @@ function restorePendingWork() {
     else if (pending?.kind === 'songDesign' || pending?.kind === 'songChunk') restoreSongGeneration();
 }
 function songModeEnabled() { return !!$('songMode').checked; }
+function composerDesignPassEnabled() { return $('composerDesignPass') ? !!$('composerDesignPass').checked : true; }
 function saveSongMode() {
     try { localStorage.setItem('resone.songMode', songModeEnabled() ? '1' : '0'); } catch {}
+}
+function saveComposerDesignPass() {
+    try { localStorage.setItem('resone.composerDesignPass', composerDesignPassEnabled() ? '1' : '0'); } catch {}
 }
 function selectedSongLaneIds() {
     return song.lanes.filter(l => l.includeInAi !== false).map(l => l.id);
@@ -466,7 +564,8 @@ function startSongGeneration(text) {
         send('stop'); transport = 'stopped'; anchor = 0;
         status('Song · Producer planning…'); busy();
         send('songDesign', {description : text.trim(), tempo : song.tempo, meter : song.meter,
-            targetBars : song.bars, useAhd : $('ahd').checked}, id);
+            targetBars : song.bars, useAhd : $('ahd').checked, composerDesignPass : composerDesignPassEnabled(),
+            composerOverview : (typeof workspaceComposerOverview !== 'undefined' ? workspaceComposerOverview : '')}, id);
     } catch (e) { status(e.message); }
 }
 function sectionBounds(section) {
@@ -536,6 +635,7 @@ function applySongChunk(payload) {
     const shifted = t.notes.filter(n => Number.isFinite(n.start) && Number.isFinite(n.duration) && n.duration > 0 && n.start < length + 1e-6)
         .map(n => ({...n, start : start + Math.max(0, n.start), duration : Math.min(n.duration, Math.max(.001, end - (start + Math.max(0, n.start))))}));
     target.notes = [...kept, ...shifted].sort((a,b) => a.start-b.start || a.pitch-b.pitch);
+    if (typeof rememberNotationKey === 'function') rememberNotationKey(target,t.notation,start,end);
     target.originalBrief = target.originalBrief || songRun.brief;
     target.prompts = [...(target.prompts || []), `[${songRun.state.sections[pending.sectionIndex].title}] ${songRun.brief}`];
     target.clipLengthBeats = Math.max(Number(target.clipLengthBeats)||0, ...songRun.state.sections.map(s => sectionBounds(s).end));
@@ -565,7 +665,7 @@ function finishSongGeneration() {
         status(`Song complete with ${failures.length} skipped generation${failures.length === 1 ? '' : 's'}. ${completed} chunk${completed === 1 ? '' : 's'} completed.`);
     else
         status('Song complete. Generated every checked lane through every producer section.');
-    if (duration()) send('play', song);
+    if (duration()) { anchor=0; editorBeat=0; send('play',song); }
 }
 function submit() {
     if (recording) {
@@ -655,11 +755,48 @@ for (const id of ['tempo', 'meter', 'bars'])
         }
     };
 $('instrument').onchange = () => {
-    const p = presets[Number($('instrument').value)];
-    if (!p)
+    const target = lane(), select = $('instrument');
+    if (target.vocals) {
+        const value = select.value;
+        if (value === VOCAL_SOURCE_NEW) {
+            // Restore the actual lane source before opening the modal so Cancel is lossless.
+            render();
+            openVoiceDesigner();
+            return;
+        }
+        if (value === VOCAL_SOURCE_OOHS) {
+            if (!target.voiceId && !target.renderedVocalPath) return;
+            checkpoint();
+            target.voiceId = '';
+            target.bank = 0;
+            target.program = VOCAL_OOHS_PROGRAM;
+            target.renderedVocalPath = '';
+            target.renderedVocalSignature = '';
+            changed();
+            status('Vocals · Using Oohs MIDI preview.');
+            return;
+        }
+        if (value.startsWith('voice:')) {
+            const id = value.slice(6);
+            if (!savedVoice(id)) { render(); return; }
+            if (target.voiceId === id) return;
+            checkpoint();
+            target.voiceId = id;
+            target.renderedVocalPath = '';
+            target.renderedVocalSignature = '';
+            changed();
+            send('voiceSelect',{id},crypto.randomUUID());
+            send('voiceServiceActivity',{service:'custom-voice'},crypto.randomUUID());
+            status('Vocals · Selected ' + savedVoice(id).name + '. Render singing to hear this voice.');
+            return;
+        }
+        render();
         return;
+    }
+    const p = presets[Number(select.value)];
+    if (!p) return;
     checkpoint();
-    Object.assign(lane(), {bank : p.bank, program : p.program});
+    Object.assign(target, {bank : p.bank, program : p.program});
     changed();
 };
 $('addLane').onclick = () => {
@@ -684,6 +821,8 @@ $('addLane').onclick = () => {
         renderedVocalPath : '',
         renderedVocalSignature : '',
         vocalGuidance : [],
+        key : '',
+        keyRegions : [],
         notation : '',
         originalBrief : '',
         clipLengthBeats : 0,
@@ -709,14 +848,16 @@ $('play').onclick = () => {
             status('Create some music first.');
             return;
         }
-        send('play', song);
+        send('play', {project:clone(song), startSeconds:anchor});
     } catch (e) {
         status(e.message);
     }
 };
 $('restart').onclick = () => {
-    if (duration())
-        send('play', song);
+    if (duration()) {
+        anchor=0; editorBeat=0; anchorTime=performance.now();
+        send('play', {project:clone(song), startSeconds:0});
+    }
 };
 $('stop').onclick = () => send('stop');
 $('export').onclick = () => {
@@ -736,26 +877,32 @@ $('dragFullMidi').onpointerdown = e => {
     status('Dragging full multitrack MIDI…');
     send('dragProjectMidi', {project : clone(song)});
 };
-$('zoom').oninput = () => {
-    zoom = Number($('zoom').value);
-    draw();
-};
-$('zoomIn').onclick = () => {
-    zoom = Math.min(100, zoom + 8);
-    $('zoom').value = zoom;
-    draw();
-};
-$('zoomOut').onclick = () => {
-    zoom = Math.max(12, zoom - 8);
-    $('zoom').value = zoom;
-    draw();
-};
+function setHorizontalZoom(value, redraw=true) {
+    const next=Math.max(8,Math.min(220,Number(value)||28));
+    zoom=next;
+    if ($('zoom')) $('zoom').value=next;
+    saveEditorPreferences();
+    if (redraw) draw();
+}
+$('zoom').oninput = () => setHorizontalZoom($('zoom').value);
+$('zoomIn').onclick = () => setHorizontalZoom(zoom*1.2);
+$('zoomOut').onclick = () => setHorizontalZoom(zoom/1.2);
 $('fit').onclick = () => {
-    zoom = Math.max(4, ($('timeline').clientWidth - 20) / Math.max(duration(), song.bars * beatsPerBar()));
-    $('zoom').value = zoom;
-    draw();
+    const next=Math.max(8,Math.min(220,($('timeline').clientWidth-20)/Math.max(duration(),song.bars*beatsPerBar())));
+    setHorizontalZoom(next);
 };
+function setVerticalZoom(value, redraw=true) {
+    const l=lane(), next=Math.max(MIN_VERTICAL_ZOOM,Math.min(MAX_VERTICAL_ZOOM,Number(value)||1));
+    laneZoomYPrefs[l.id]=next;
+    if ($('zoomY')) $('zoomY').value=next;
+    saveEditorPreferences();
+    if (redraw) render();
+}
+if ($('zoomY')) $('zoomY').oninput=()=>setVerticalZoom($('zoomY').value);
+if ($('zoomYIn')) $('zoomYIn').onclick=()=>setVerticalZoom(laneVerticalZoom()*1.2);
+if ($('zoomYOut')) $('zoomYOut').onclick=()=>setVerticalZoom(laneVerticalZoom()/1.2);
 function instrumentName(l) {
+    if (l.vocals) return savedVoice(l.voiceId)?.name || 'Oohs';
     return presets.find(p => p.bank === l.bank && p.program === l.program)?.name ||
            (l.drums ? 'Standard kit' : 'Program ' + (l.program + 1));
 }
@@ -801,35 +948,39 @@ function render() {
     vocalPanel.hidden = !vocal.vocals;
     if (vocal.vocals) {
         if (document.activeElement !== $('vocalLyrics')) $('vocalLyrics').value = vocal.lyrics || '';
-        const voiceSelect=$('vocalVoice');
-        if (voiceSelect) {
-            const wanted=vocal.voiceId || '';
-            if (wanted && [...voiceSelect.options].some(o=>o.value===wanted)) voiceSelect.value=wanted;
-            else if (savedVoices.length) { vocal.voiceId=savedVoices[0].id; voiceSelect.value=vocal.voiceId; }
-        }
         $('renderVocals').textContent = vocal.renderedVocalPath ? '♬ Re-render singing' : '♬ Render singing';
     }
     const seconds = duration() * 60 / song.tempo;
     $('duration').textContent =
         Math.floor(seconds / 60) + ':' + String(Math.floor(seconds % 60)).padStart(2, '0');
-    const select = $('instrument');
+    const select = $('instrument'), sourceLabel = $('soundSourceLabel');
     select.replaceChildren();
-    presets.forEach((p, i) => {
-        if ((p.bank === 128) !== lane().drums)
-            return;
-        const o = new Option(p.name, i);
-        o.selected = p.bank === lane().bank && p.program === lane().program;
-        select.add(o);
-    });
-    if (!select.options.length)
-        select.add(new Option('Loading instruments…', ''));
-    const lanes = $('lanes'), outputs = $('outputs');
+    if (lane().vocals) {
+        sourceLabel.textContent = 'Voice';
+        select.add(new Option('Oohs', VOCAL_SOURCE_OOHS));
+        for (const v of savedVoices) select.add(new Option(v.name, 'voice:' + v.id));
+        select.add(new Option('＋ New voice…', VOCAL_SOURCE_NEW));
+        select.value = vocalSourceValue(lane());
+    } else {
+        sourceLabel.textContent = 'Instrument';
+        presets.forEach((p, i) => {
+            if ((p.bank === 128) !== lane().drums) return;
+            const o = new Option(p.name, i);
+            o.selected = p.bank === lane().bank && p.program === lane().program;
+            select.add(o);
+        });
+        if (!select.options.length) select.add(new Option('Loading instruments…', ''));
+    }
+    const lanes = $('lanes'), pitchRuler = $('pitchRuler'), outputs = $('outputs');
+    syncZoomControls();
     lanes.replaceChildren();
+    if (pitchRuler) pitchRuler.replaceChildren();
     outputs.replaceChildren();
     song.lanes.forEach((l, i) => {
         const row = document.createElement('div');
         row.className = 'lane' + (l.id === selected ? ' selected' : '') + (l.includeInAi === false ? ' songExcluded' : '');
         row.style.setProperty('--lane', colors[i % 6]);
+        row.style.height = laneHeight(l) + 'px';
         const title = document.createElement('div');
         title.className = 'laneTitle';
         const icon = document.createElement('span');
@@ -840,6 +991,11 @@ function render() {
         const sub = document.createElement('small');
         sub.textContent = instrumentName(l);
         name.append(sub);
+        if (l.id === selected) {
+            const keyBadge=document.createElement('small'); keyBadge.className='laneKeyBadge';
+            const k=keyAt(l,editorBeat), spec=keySpec(k); keyBadge.textContent=spec?`Key ${k} · tonic ${spec.tonicName}`:'Key —';
+            name.append(keyBadge);
+        }
         title.append(icon, name);
         row.append(title);
         const actions = document.createElement('div');
@@ -880,7 +1036,7 @@ function render() {
                 e.stopPropagation();
                 checkpoint();
                 l[key] = !l[key];
-                changed();
+                sendLiveMixer(); persistLiveMixer(true);
             };
             controls.append(b);
         }
@@ -896,17 +1052,44 @@ function render() {
             checkpoint();
         };
         gain.onclick = e => e.stopPropagation();
+        gain.oninput = () => {
+            l.volume = Number(gain.value);
+            sendLiveMixer();
+        };
         gain.onchange = () => {
             l.volume = Number(gain.value);
-            changed();
+            sendLiveMixer(); persistLiveMixer(false);
         };
         controls.append(gain);
         row.append(controls);
+        const resizeHandle=document.createElement('div'); resizeHandle.className='laneResizeHandle'; resizeHandle.title='Drag to resize lane';
+        resizeHandle.onpointerdown=e=>{
+            e.preventDefault(); e.stopPropagation();
+            const startY=e.clientY, startBase=laneBaseHeight(l);
+            const move=ev=>{ laneHeightPrefs[l.name]=Math.max(MIN_LANE_HEIGHT,Math.min(MAX_LANE_HEIGHT,startBase+(ev.clientY-startY)/laneVerticalZoom(l))); saveEditorPreferences(); render(); };
+            const up=()=>{ window.removeEventListener('pointermove',move); window.removeEventListener('pointerup',up); saveEditorPreferences(); };
+            window.addEventListener('pointermove',move); window.addEventListener('pointerup',up,{once:true});
+        };
+        row.append(resizeHandle);
         row.onclick = () => {
             selected = l.id;
             render();
         };
         lanes.append(row);
+        if (pitchRuler) {
+            const metric=laneMetrics()[i], g=lanePitchGeometry(l,metric), key=keySpec(keyAt(l,editorBeat));
+            const rulerLane=document.createElement('div'); rulerLane.className='pitchRulerLane'; rulerLane.style.height=metric.height+'px';
+            for(let pitch=g.hi;pitch>=g.lo;pitch--) {
+                const pc=((pitch%12)+12)%12, inKey=!!key&&key.pitches.has(pc), tonic=!!key&&key.tonic===pc;
+                const cell=document.createElement('div'); cell.className='pitchRulerCell'+(inKey?' inScale':' outScale')+(tonic?' tonic':'');
+                cell.style.top=((g.hi-pitch)*g.rowHeight)+'px'; cell.style.height=g.rowHeight+'px';
+                const enough=g.rowHeight>=8.5, landmark=pc===0||tonic;
+                cell.textContent=(enough||landmark)?noteName(pitch)+(tonic?'  T':''):'';
+                if(tonic) cell.title=noteName(pitch)+' — tonic of '+key.key; else if(enough) cell.title=noteName(pitch);
+                rulerLane.append(cell);
+            }
+            pitchRuler.append(rulerLane);
+        }
         const out = document.createElement('div');
         out.className = 'output';
         out.style.setProperty('--lane', colors[i % 6]);
@@ -942,6 +1125,7 @@ function render() {
         outputs.append(out);
     });
     draw();
+    updateSelectedKeyBadge();
     busy();
 }
 const svgNS = 'http://www.w3.org/2000/svg';
@@ -952,148 +1136,146 @@ function svg(tag, attrs) {
     return e;
 }
 function pitchRange(l) {
-    const values = l.notes.map(n => n.pitch);
-    let lo = Math.min(48, ...values) - 2, hi = Math.max(72, ...values) + 2;
-    return {lo, hi};
+    const values=(l.notes||[]).map(n=>n.pitch).filter(Number.isFinite);
+    let lo=values.length?Math.min(...values)-3:48, hi=values.length?Math.max(...values)+3:72;
+    if(hi-lo<24) { const mid=(hi+lo)/2; lo=Math.floor(mid-12); hi=Math.ceil(mid+12); }
+    lo=Math.max(0,Math.floor(lo/12)*12); hi=Math.min(127,Math.ceil((hi+1)/12)*12-1);
+    return {lo,hi};
 }
-function noteY(l, n, i) {
-    const {lo, hi} = pitchRange(l);
-    return 26 + i * 78 + 8 + (hi - n.pitch) / (hi - lo) * 59;
+function lanePitchGeometry(l, metric) {
+    const range=pitchRange(l), count=range.hi-range.lo+1;
+    return {...range,rowHeight:metric.height/count};
+}
+function noteY(l,n,metric) {
+    const g=lanePitchGeometry(l,metric);
+    return metric.top+(g.hi-n.pitch)*g.rowHeight+1;
+}
+function laneKeyRegions(l,end) {
+    const regions=(Array.isArray(l.keyRegions)?l.keyRegions:[]).map(r=>({start:Math.max(0,Number(r.start)||0),end:Math.min(end,Number(r.end)||0),key:String(r.key||'')}))
+        .filter(r=>r.end>r.start&&keySpec(r.key));
+    if(regions.length) return regions;
+    const key=String(l.key||notationKey(l.notation)||'');
+    return keySpec(key)?[{start:0,end,key}]:[];
 }
 function draw() {
-    const root = $('piano');
-    root.replaceChildren();
-    const end = Math.max(duration(), song.bars * beatsPerBar()),
-          width = Math.max($('timeline').clientWidth, end * zoom + 20), height = 26 + song.lanes.length * 78;
-    root.setAttribute('width', width);
-    root.setAttribute('height', height);
-    root.append(svg('rect', {x : 0, y : 0, width, height, fill : '#11202b'}));
-    for (let beat = 0; beat <= end; beat++) {
-        const bar = beat % beatsPerBar() === 0;
-        root.append(svg('line', {
-            x1 : beat * zoom,
-            x2 : beat * zoom,
-            y1 : 26,
-            y2 : height,
-            stroke : bar ? '#344b5b' : '#203341',
-            'stroke-width' : bar ? 1 : .6
-        }));
-        if (bar) {
-            const t = svg('text', {x : beat * zoom + 5, y : 18, fill : '#809aaf', 'font-size' : 11});
-            t.textContent = String(Math.floor(beat / beatsPerBar()) + 1);
-            root.append(t);
-        }
+    const root=$('piano'); root.replaceChildren();
+    const end=Math.max(duration(),song.bars*beatsPerBar()), metrics=laneMetrics(), selectedZoom=laneHorizontalZoom(),
+          width=Math.max($('timeline').clientWidth,end*selectedZoom+20,20),
+          height=metrics.length?metrics.at(-1).top+metrics.at(-1).height:26;
+    root.setAttribute('width',width); root.setAttribute('height',height);
+    root.append(svg('rect',{x:0,y:0,width,height,fill:'#11202b'}));
+    // The top ruler always describes the selected lane's local horizontal scale.
+    for(let beat=0;beat<=end;beat++) {
+        const bar=beat%beatsPerBar()===0, x=beat*selectedZoom;
+        root.append(svg('line',{x1:x,x2:x,y1:0,y2:26,stroke:bar?'#456172':'#263b49','stroke-width':bar?1.2:.65}));
+        if(bar) { const t=svg('text',{x:x+5,y:18,fill:'#91aabd','font-size':11}); t.textContent=String(Math.floor(beat/beatsPerBar())+1); root.append(t); }
     }
-    song.lanes.forEach((l, i) => {
-        root.append(svg('rect', {
-            x : 0,
-            y : 26 + i * 78,
-            width,
-            height : 78,
-            fill : l.id === selected ? '#789bbe0b' : 'transparent',
-            stroke : '#344654',
-            'stroke-width' : .6
-        }));
-        for (let j = 1; j < 4; j++)
-            root.append(svg('line', {
-                x1 : 0,
-                x2 : width,
-                y1 : 26 + i * 78 + j * 19.5,
-                y2 : 26 + i * 78 + j * 19.5,
-                stroke : '#20313e',
-                'stroke-width' : .5
-            }));
-        l.notes.forEach((n, index) => {
-            const r = svg('rect', {
-                x : n.start * zoom,
-                y : noteY(l, n, i),
-                width : Math.max(3, n.duration * zoom - 2),
-                height : 6,
-                rx : 1,
-                fill : colors[i % 6],
-                class : 'note',
-                'data-lane' : i,
-                'data-note' : index
-            });
-            const t = svg('title', {});
-            t.textContent = 'MIDI ' + n.pitch + ' · ' + n.duration + ' beats';
-            r.append(t);
-            root.append(r);
+    metrics.forEach(m=>{
+        const l=m.lane, color=colors[m.index%6], g=lanePitchGeometry(l,m), regions=laneKeyRegions(l,end), xZoom=selectedZoom;
+        root.append(svg('rect',{x:0,y:m.top,width,height:m.height,fill:l.id===selected?'#789bbe10':'#0f1c25',stroke:'#3b5363','stroke-width':.8}));
+        // Horizontal time scale is shared by every lane.
+        for(let beat=0;beat<=end;beat++) {
+            const bar=beat%beatsPerBar()===0, x=beat*xZoom;
+            root.append(svg('line',{x1:x,x2:x,y1:m.top,y2:m.top+m.height,stroke:bar?'#456172':'#263b49','stroke-width':bar?1.2:.65}));
+        }
+        for(let pitch=g.lo;pitch<=g.hi;pitch++) {
+            const y=m.top+(g.hi-pitch)*g.rowHeight, pc=((pitch%12)+12)%12;
+            if(regions.length) for(const region of regions) {
+                const spec=keySpec(region.key), inKey=spec?.pitches.has(pc), tonic=spec?.tonic===pc;
+                const fill=tonic?color+'3d':inKey?color+'24':'#6b78831f';
+                root.append(svg('rect',{x:region.start*xZoom,y,width:Math.max(0,(region.end-region.start)*xZoom),height:g.rowHeight,fill}));
+            }
+            root.append(svg('line',{x1:0,x2:width,y1:y+g.rowHeight,y2:y+g.rowHeight,stroke:'#69798366','stroke-width':.55}));
+            for(const region of regions) {
+                const spec=keySpec(region.key), rowInKey=!!spec&&spec.pitches.has(pc), rowTonic=!!spec&&spec.tonic===pc;
+                const rowStroke=rowTonic?color+'b0':rowInKey?color+'62':'#69798366';
+                root.append(svg('line',{x1:region.start*xZoom,x2:region.end*xZoom,y1:y+g.rowHeight,y2:y+g.rowHeight,stroke:rowStroke,'stroke-width':rowTonic?1.15:rowInKey?.75:.55}));
+            }
+        }
+        (l.notes||[]).forEach((n,index)=>{
+            const activeKey=keySpec(keyAt(l,n.start+.0001)), inKey=!activeKey||activeKey.pitches.has(((n.pitch%12)+12)%12);
+            const isSelected=selectedNote?.laneId===l.id&&selectedNote?.noteIndex===index;
+            const rowTop=m.top+(g.hi-n.pitch)*g.rowHeight, h=Math.max(2,g.rowHeight*.82), y=rowTop+(g.rowHeight-h)/2, w=Math.max(4,n.duration*xZoom-2);
+            const r=svg('rect',{x:n.start*xZoom,y,width:w,height:h,rx:Math.min(3,h/3),fill:inKey?color:'#77838c',class:'note'+(isSelected?' selectedNote':''),'data-lane':m.index,'data-note':index,stroke:isSelected?'#ffffff':'#ffffff22','stroke-width':isSelected?2:.5});
+            const title=svg('title',{}); title.textContent=noteName(n.pitch)+' · '+n.duration+' beats'; r.append(title); root.append(r);
+            if(h>=10&&w>=28) { const text=svg('text',{x:n.start*xZoom+4,y:y+h/2+3.5,fill:'#0b1821','font-size':Math.min(11,Math.max(8,h-2.5)),'font-weight':650,'pointer-events':'none'}); text.textContent=noteName(n.pitch); root.append(text); }
         });
     });
 }
-$('piano').onpointerdown = e => {
-    const r = e.target.closest('.note');
-    if (!r || e.button !== 0 || pending)
-        return;
-    const li = Number(r.dataset.lane), ni = Number(r.dataset.note), l = song.lanes[li], n = l.notes[ni];
-    selected = l.id;
-    checkpoint();
-    const bounds = r.getBoundingClientRect();
-    drag = {
-        li,
-        ni,
-        x : e.clientX,
-        y : e.clientY,
-        start : n.start,
-        pitch : n.pitch,
-        duration : n.duration,
-        resize : e.clientX > bounds.right - 7,
-        range : pitchRange(l)
-    };
+function pointInPiano(e) {
+    const rect=$('piano').getBoundingClientRect();
+    return {x:e.clientX-rect.left,y:e.clientY-rect.top,rect};
+}
+function snapQuarterBeat(value,bypass=false) { return bypass?Math.round(value*1000)/1000:Math.round(value); }
+$('piano').onpointerdown=e=>{
+    if(e.button!==0||pending) return;
+    const hit=e.target.closest('.note'), point=pointInPiano(e);
+    if(!hit) {
+        selectedNote=null;
+        const m=metricAtY(point.y);
+        if(m&&selected!==m.lane.id) { selected=m.lane.id; render(); }
+        seekBeat(point.x/laneHorizontalZoom(),true); draw(); return;
+    }
+    const li=Number(hit.dataset.lane), ni=Number(hit.dataset.note), l=song.lanes[li], n=l.notes[ni], metric=laneMetrics()[li], g=lanePitchGeometry(l,metric);
+    const bounds=hit.getBoundingClientRect(), changingLane=selected!==l.id;
+    selected=l.id; selectedNote={laneId:l.id,noteIndex:ni}; checkpoint();
+    drag={li,ni,x:e.clientX,y:e.clientY,start:n.start,pitch:n.pitch,duration:n.duration,resize:e.clientX>bounds.right-8,rowHeight:g.rowHeight,xZoom:laneHorizontalZoom()};
+    if(changingLane) render(); else draw();
     $('piano').setPointerCapture(e.pointerId);
 };
-$('piano').onpointermove = e => {
-    if (!drag)
-        return;
-    const d = drag, n = song.lanes[d.li].notes[d.ni];
-    if (d.resize)
-        n.duration = Math.max(.25, Math.round((d.duration + (e.clientX - d.x) / zoom) * 4) / 4);
+$('piano').onpointermove=e=>{
+    if(!drag) return;
+    const d=drag,n=song.lanes[d.li].notes[d.ni];
+    if(d.resize) n.duration=Math.max(e.altKey?.0625:1,snapQuarterBeat(d.duration+(e.clientX-d.x)/d.xZoom,e.altKey));
     else {
-        n.start = Math.max(0, Math.round((d.start + (e.clientX - d.x) / zoom) * 4) / 4);
-        n.pitch = Math.max(
-            0, Math.min(127, d.pitch - Math.round((e.clientY - d.y) / 59 * (d.range.hi - d.range.lo))));
+        n.start=Math.max(0,snapQuarterBeat(d.start+(e.clientX-d.x)/d.xZoom,e.altKey));
+        n.pitch=Math.max(0,Math.min(127,d.pitch-Math.round((e.clientY-d.y)/Math.max(1,d.rowHeight))));
     }
     draw();
 };
-$('piano').onpointerup = () => {
-    if (drag) {
-        song.lanes[drag.li].notation = '';
-        drag = null;
-        changed();
-    }
+$('piano').onpointerup=()=>{
+    if(drag) { song.lanes[drag.li].notation=''; drag=null; changed(); }
 };
-$('piano').ondblclick = e => {
-    if (e.target.closest('.note') || pending)
-        return;
-    const r = $('piano').getBoundingClientRect(), i = Math.floor((e.clientY - r.top - 26) / 78);
-    if (i < 0 || i >= song.lanes.length)
-        return;
-    const l = song.lanes[i], range = pitchRange(l);
+$('piano').ondblclick=e=>{
+    if(e.target.closest('.note')||pending) return;
+    const point=pointInPiano(e), metric=metricAtY(point.y); if(!metric) return;
+    const l=metric.lane,g=lanePitchGeometry(l,metric), row=Math.floor((point.y-metric.top)/g.rowHeight), pitch=Math.max(g.lo,Math.min(g.hi,g.hi-row));
     checkpoint();
-    l.notes.push({
-        start : Math.max(0, Math.round((e.clientX - r.left) / zoom * 4) / 4),
-        duration : 1,
-        pitch : Math.max(0, Math.min(127, Math.round(range.hi - (e.clientY - r.top - 26 - i * 78 - 8) / 59 *
-                                                                    (range.hi - range.lo)))),
-        velocity : 96
-    });
-    l.notes.sort((a, b) => a.start - b.start);
-    l.notation = '';
-    selected = l.id;
-    changed();
+    const n={start:Math.max(0,snapQuarterBeat(point.x/laneHorizontalZoom(),e.altKey)),duration:1,pitch,velocity:96};
+    l.notes.push(n); l.notes.sort((a,b)=>a.start-b.start||a.pitch-b.pitch); l.notation=''; selected=l.id;
+    selectedNote={laneId:l.id,noteIndex:l.notes.indexOf(n)}; changed();
 };
-$('piano').oncontextmenu = e => {
+$('piano').oncontextmenu=e=>{
+    e.preventDefault(); const hit=e.target.closest('.note');
+    if(hit&&!pending) { checkpoint(); const l=song.lanes[Number(hit.dataset.lane)]; l.notes.splice(Number(hit.dataset.note),1); l.notation=''; selectedNote=null; changed(); }
+};
+window.addEventListener('keydown',e=>{
+    if(!['Delete','Backspace'].includes(e.key)||pending||!selectedNote) return;
+    const active=document.activeElement;
+    if(active&&(active.matches?.('input,textarea,select')||active.isContentEditable)) return;
+    const l=song.lanes.find(x=>x.id===selectedNote.laneId); if(!l) {selectedNote=null;return;}
+    const i=Number(selectedNote.noteIndex); if(i<0||i>=l.notes.length) {selectedNote=null;return;}
+    e.preventDefault(); checkpoint(); l.notes.splice(i,1); l.notation=''; selectedNote=null; changed();
+});
+$('rollContent').addEventListener('wheel',e=>{
+    if(!e.ctrlKey&&!e.metaKey&&!e.altKey) return;
     e.preventDefault();
-    const r = e.target.closest('.note');
-    if (r && !pending) {
-        checkpoint();
-        const l = song.lanes[Number(r.dataset.lane)];
-        l.notes.splice(Number(r.dataset.note), 1);
-        l.notation = '';
-        changed();
+    const target=lane();
+    if(e.ctrlKey||e.metaKey) {
+        const timeline=$('timeline'), rect=timeline.getBoundingClientRect(), viewportX=Math.max(0,e.clientX-rect.left), oldZoom=laneHorizontalZoom(), beat=(timeline.scrollLeft+viewportX)/oldZoom;
+        const next=Math.max(8,Math.min(220,oldZoom*(e.deltaY<0?1.12:.89)));
+        setHorizontalZoom(next,false); draw();
+        timeline.scrollLeft=Math.max(0,beat*next-viewportX);
+    } else if(e.altKey) {
+        const content=$('rollContent'), contentRect=content.getBoundingClientRect(), viewportY=e.clientY-contentRect.top,
+              before=laneMetrics().find(m=>m.lane.id===target.id), oldZoom=laneVerticalZoom(target);
+        const absoluteY=content.scrollTop+viewportY, relative=before?Math.max(0,Math.min(1,(absoluteY-before.top)/Math.max(1,before.height))):.5;
+        laneZoomYPrefs[target.id]=Math.max(MIN_VERTICAL_ZOOM,Math.min(MAX_VERTICAL_ZOOM,oldZoom*(e.deltaY<0?1.12:.89)));
+        syncZoomControls(); saveEditorPreferences(); render();
+        const after=laneMetrics().find(m=>m.lane.id===target.id);
+        if(after) content.scrollTop=Math.max(0,after.top+relative*after.height-viewportY);
     }
-};
+},{passive:false});
 async function importMidiFile(file) {
     if (pending || recording) throw Error('Finish the current request before importing MIDI.');
     if (!file || !/\.midi?$/i.test(file.name || '')) throw Error('Drop a .mid or .midi file.');
@@ -1109,6 +1291,8 @@ async function importMidiFile(file) {
     song.bars=Math.min(64,importedBars);
     Object.assign(target, {
         notes: imported.notes,
+        key: '',
+        keyRegions: [],
         notation: '',
         clipLengthBeats: parsed.lengthBeats,
         importedMidiName: file.name,
@@ -1195,10 +1379,10 @@ function receive(j) {
         history=Array.isArray(p.history)?p.history:[];
         workspaceId=p.id || newWorkspaceId();
         workspaceTitle=normalizedWorkspaceTitle(p.title);
-        workspaceProducerDesign=p.producerDesign || '';
-        workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceSaveRequests.clear();
+        workspaceProducerDesign=p.producerDesign || ''; workspaceComposerOverview=p.composerDesign || '';
+        workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceComposerVersion=workspaceComposerSavedVersion=0; workspaceSaveRequests.clear();
         workspaceBootstrapped=true; undo=[]; redo=[]; songRun=null; pending=null;
-        selected=song.lanes[0]?.id || selected;
+        selected=song.lanes[0]?.id || selected; selectedNote=null; editorBeat=0; anchor=0;
         $('brief').value=history.at(-1)?.brief || '';
         setWorkspaceSongs(p.songs);
         send('project',song); render(); renderHistory(); renderSongList(); busy();
@@ -1209,6 +1393,7 @@ function receive(j) {
         const ack=workspaceSaveRequests.get(j.requestId); workspaceSaveRequests.delete(j.requestId);
         if (ack?.historyVersion != null) workspaceHistorySavedVersion=Math.max(workspaceHistorySavedVersion,ack.historyVersion);
         if (ack?.producerVersion != null) workspaceProducerSavedVersion=Math.max(workspaceProducerSavedVersion,ack.producerVersion);
+        if (ack?.composerVersion != null) workspaceComposerSavedVersion=Math.max(workspaceComposerSavedVersion,ack.composerVersion);
         if (p.id === workspaceId) workspaceTitle=normalizedWorkspaceTitle(p.title || workspaceTitle);
         setWorkspaceSongs(p.songs); updateSongIdentity();
         break;
@@ -1260,6 +1445,7 @@ function receive(j) {
             }
             songRun.state = p.state; songRun.design = p.design || '';
             if (typeof workspaceProducerDesign !== 'undefined' && p.design && p.design !== workspaceProducerDesign) { workspaceProducerDesign=p.design; workspaceProducerVersion++; }
+            if (typeof workspaceComposerOverview !== 'undefined' && p.composerDesign !== undefined && p.composerDesign !== workspaceComposerOverview) { workspaceComposerOverview=p.composerDesign || ''; workspaceComposerVersion++; }
             if (typeof workspaceTitle !== 'undefined') {
                 workspaceTitle=songDesignTitle(p,songRun.brief);
                 updateSongIdentity(); renderSongList();
@@ -1302,6 +1488,7 @@ function receive(j) {
                 const generatedLength = Math.max(0, ...t.notes.map(n => n.start + n.duration));
                 Object.assign(l, {notation : t.notation, originalBrief : t.originalBrief || before.originalBrief || brief,
                     prompts : [...(before.prompts || []), brief], notes : clone(t.notes), clipLengthBeats : generatedLength});
+                if (typeof rememberNotationKey === 'function') rememberNotationKey(l,t.notation);
                 if (l.vocals) { l.renderedVocalPath=''; l.renderedVocalSignature=''; }
             }
             for (const t of tracks) LaneNotation.accept(song.lanes.find(l => l.id === t.laneId));
@@ -1316,7 +1503,7 @@ function receive(j) {
             renderHistory();
             status('Ready. Updated ' + lane().name + '.' +
                 (p.warnings?.length ? ' ' + p.warnings.join(' ') : ''));
-            send('play', song);
+            anchor=0; editorBeat=0; send('play',song);
         }
         break;
     case 'vocalsRendered':
@@ -1330,7 +1517,7 @@ function receive(j) {
             pending = null;
             commit();
             status('Ready. Rendered ' + target.name + (p.qwenModelType ? ' with local Qwen TTS (' + p.qwenModelType + ').' : '.'));
-            send('play', song);
+            anchor=0; editorBeat=0; send('play',song);
         }
         break;
     case 'voicePreview':
@@ -1371,6 +1558,8 @@ function receive(j) {
     case 'transport':
         transport = p.state;
         anchor = p.seconds || 0;
+        if (transport === 'stopped' && anchor >= duration()*60/song.tempo - .03) anchor = 0;
+        editorBeat = anchor * song.tempo / 60;
         anchorTime = performance.now();
         $('play').textContent = transport === 'playing' ? 'Ⅱ' : '▶';
         if (!pending && transport === 'buffering')
@@ -1440,24 +1629,19 @@ window.SCMFD = () => {};
 window.SMMFD = () => {};
 window.SSMFD = () => {};
 function animate() {
-    const head = $('playhead');
-    head.style.display = [ 'playing', 'paused', 'buffering' ].includes(transport) ? 'block' : 'none';
-    const seconds = anchor + (transport === 'playing' ? (performance.now() - anchorTime) / 1000 : 0);
-    head.style.left = (seconds * song.tempo / 60 * zoom) + 'px';
+    const head=$('playhead');
+    const seconds=anchor+(transport==='playing'?(performance.now()-anchorTime)/1000:0);
+    if(['playing','paused','buffering'].includes(transport)) editorBeat=seconds*song.tempo/60;
+    head.style.display=(duration()>0&&(['playing','paused','buffering'].includes(transport)||editorBeat>0))?'block':'none';
+    const metric=laneMetrics().find(m=>m.lane.id===selected);
+    head.style.left=(editorBeat*laneHorizontalZoom())+'px';
+    if(metric) { head.style.top=metric.top+'px'; head.style.height=metric.height+'px'; head.style.bottom='auto'; }
+    updateSelectedKeyBadge();
     requestAnimationFrame(animate);
 }
 $('vocalLyrics').onchange = () => {
     if (!lane().vocals) return;
     checkpoint(); lane().lyrics = $('vocalLyrics').value; changed();
-};
-$('vocalVoice').onchange = () => {
-    if (!lane().vocals) return;
-    const id=$('vocalVoice').value.trim();
-    if (!id) { openVoiceDesigner(); return; }
-    checkpoint(); lane().voiceId=id; changed();
-    send('voiceSelect',{id},crypto.randomUUID());
-    // Warm the saved/reference-voice Qwen server while the user continues editing.
-    send('voiceServiceActivity',{service:'custom-voice'},crypto.randomUUID());
 };
 $('renderVocals').onclick = () => {
     try {
@@ -1466,10 +1650,10 @@ $('renderVocals').onclick = () => {
         const target = lane();
         if (!target.vocals) throw Error('Select the Vocals lane.');
         if (!target.notes?.length) throw Error('Create or import a vocal melody first.');
-        const text = $('vocalLyrics').value.trim(), voiceId=$('vocalVoice').value.trim();
+        const text = $('vocalLyrics').value.trim(), voiceId=target.voiceId || '';
         if (!text) throw Error('Enter lyrics for the vocal lane.');
-        if (!voiceId || !savedVoices.some(v=>v.id===voiceId)) throw Error('Create or select a saved voice first.');
-        target.lyrics = text; target.voiceId = voiceId;
+        if (!voiceId || !savedVoice(voiceId)) throw Error('Choose a saved voice from the Voice selector first.');
+        target.lyrics = text;
         LaneNotation.sync(target, song.tempo, song.meter);
         const id=crypto.randomUUID();
         pending={id,kind:'renderVocals',laneId:target.id};
@@ -1542,7 +1726,6 @@ async function importVoiceWav(file) {
         send('voiceImportPreview',{wav:bytesToBase64(bytes),renderSinging:$('voiceSingingPreview').checked,melodyId:$('voicePreviewMelody').value||'fun'},id);
     } catch(e) { status(e.message); $('voicePreviewStatus').textContent=e.message; }
 }
-$('newVoice').onclick=openVoiceDesigner;
 $('voiceGenerate').onclick=requestVoiceDesignPreview;
 $('voicePlay').onclick=playCurrentVoicePreview;
 $('voiceBrowse').onclick=()=>$('voiceWavFile').click();
@@ -1576,8 +1759,17 @@ $('deleteSong').onclick=()=>{
     send('workspaceDelete',{id:workspaceId},crypto.randomUUID());
 };
 
+try {
+    const zx=Number(localStorage.getItem('resone.pianoRoll.zoomX')); if(Number.isFinite(zx)&&zx>=8&&zx<=220) zoom=zx;
+    const zy=Number(localStorage.getItem('resone.pianoRoll.zoomY')); if(Number.isFinite(zy)&&zy>=MIN_VERTICAL_ZOOM&&zy<=MAX_VERTICAL_ZOOM) verticalZoom=zy;
+    const laneY=JSON.parse(localStorage.getItem('resone.pianoRoll.laneZoomY')||'{}'); if(laneY&&typeof laneY==='object') laneZoomYPrefs=laneY;
+    const heights=JSON.parse(localStorage.getItem('resone.pianoRoll.laneHeights')||'{}'); if(heights&&typeof heights==='object') laneHeightPrefs=heights;
+} catch {}
+syncZoomControls();
 try { $('songMode').checked = localStorage.getItem('resone.songMode') === '1'; } catch { $('songMode').checked = false; }
+try { const saved=localStorage.getItem('resone.composerDesignPass'); $('composerDesignPass').checked = saved === null ? true : saved === '1'; } catch { $('composerDesignPass').checked = true; }
 $('songMode').onchange = () => { saveSongMode(); render(); };
+$('composerDesignPass').onchange = () => { saveComposerDesignPass(); };
 render();
 renderHistory();
 requestAnimationFrame(animate);

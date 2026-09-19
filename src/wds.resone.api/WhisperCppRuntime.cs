@@ -42,12 +42,12 @@ internal sealed class WhisperCppRuntime(HttpClient http, ResoneSettings settings
             if (!settings.WhisperEngineDirectories.TryGetValue(rid, out string? configured) || string.IsNullOrWhiteSpace(configured))
                 throw new PlatformNotSupportedException($"No whisper.cpp engine directory is configured for {rid}.");
 
-            string engine = LlamaEngineResolver.ResolveUnderRoot(configured);
+            string engine = AiRuntimeRoot.ResolveEngineDirectory("asr", configured);
             if (!Directory.Exists(engine))
                 throw new DirectoryNotFoundException("Whisper.cpp engine directory was not found: " + engine);
 
             string executable = ResolveServerExecutable(engine);
-            string model = LlamaEngineResolver.ResolveUnderRoot(settings.WhisperModelPath);
+            string model = LlamaEngineResolver.ResolveAiAsset(settings.WhisperModelPath);
             if (!File.Exists(model))
                 throw new FileNotFoundException("Whisper.cpp model was not found.", model);
 
@@ -88,7 +88,7 @@ internal sealed class WhisperCppRuntime(HttpClient http, ResoneSettings settings
             {
                 token.ThrowIfCancellationRequested();
                 if (candidate.HasExited)
-                    throw new InvalidOperationException($"Bundled whisper.cpp exited while loading (code {candidate.ExitCode}). See logs/whisper-cpp.log.");
+                    throw new InvalidOperationException($"Bundled whisper.cpp exited while loading (code {candidate.ExitCode}). See the daily Resone log: {ResoneDailyLog.CurrentPath}.");
                 try
                 {
                     using var pingStop = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -191,15 +191,7 @@ internal sealed class WhisperCppRuntime(HttpClient http, ResoneSettings settings
     }
 
     private static string Trim(string text, int max) => text.Length <= max ? text : text[..max] + "…";
-    private static void Log(string message)
-    {
-        try
-        {
-            string dir = Path.Combine(LlamaEngineResolver.Root, "logs"); Directory.CreateDirectory(dir);
-            File.AppendAllText(Path.Combine(dir, "whisper-cpp.log"), $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
-        }
-        catch { }
-    }
+    private static void Log(string message) => ResoneDailyLog.Write("WHISPER", message);
     private void ThrowIfDisposed() { if (disposed) throw new ObjectDisposedException(nameof(WhisperCppRuntime)); }
     public ValueTask DisposeAsync() { if (!disposed) { disposed = true; CleanupProcess(); gate.Dispose(); } return ValueTask.CompletedTask; }
 }

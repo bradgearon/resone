@@ -14,6 +14,8 @@ public sealed class SongGenerationState
     public string Brief { get; set; } = "";
     public string Title { get; set; } = "Untitled Song";
     public string Design { get; set; } = "";
+    /// <summary>Optional shared non-track composer design: melody/motifs/chords/responses in Resonator notation.</summary>
+    public string ComposerDesign { get; set; } = "";
     public string Summary { get; set; } = ""; // retained for wire/backward compatibility; song mode no longer requires a prose roll-up.
     public int Tempo { get; set; } = 120;
     public string Meter { get; set; } = "4/4";
@@ -57,11 +59,12 @@ public sealed record SongGenerationContext(string SectionId, string Packet);
 public static class SongGenerationProvisioner
 {
     private const int MaxDesignChars = 18000;
+    private const int MaxComposerDesignChars = 22000;
     private const int MaxSectionMemoryChars = 6000;
     private const int MaxMusicalMemories = 32;
     private const int MaxPendingComposerNotesChars = 6000;
 
-    public static SongGenerationState Create(string brief, string design, int tempo, string meter, int targetBars)
+    public static SongGenerationState Create(string brief, string design, int tempo, string meter, int targetBars, string composerDesign = "")
     {
         if (string.IsNullOrWhiteSpace(brief)) throw new ArgumentException("A song brief is required.", nameof(brief));
         if (string.IsNullOrWhiteSpace(design)) throw new ArgumentException("Producer notes are required.", nameof(design));
@@ -72,6 +75,7 @@ public static class SongGenerationProvisioner
             Brief = brief.Trim(),
             Title = SongCompositionDesigner.ExtractTitle(design, brief),
             Design = design.Trim(),
+            ComposerDesign = (composerDesign ?? "").Trim(),
             Tempo = tempo,
             Meter = meter,
             TargetBars = targetBars,
@@ -92,8 +96,17 @@ public static class SongGenerationProvisioner
             .AppendLine($"Current lane: {laneName}")
             .AppendLine()
             .AppendLine("PRODUCER NOTES")
-            .AppendLine(Clip(state.Design, MaxDesignChars))
-            .AppendLine()
+            .AppendLine(Clip(state.Design, MaxDesignChars));
+
+        if (!string.IsNullOrWhiteSpace(state.ComposerDesign))
+        {
+            b.AppendLine()
+                .AppendLine("GLOBAL COMPOSER DESIGN PASS — SHARED MUSICAL DNA FOR EVERY TRACK")
+                .AppendLine("This non-track-scoped material was composed before lane generation. Treat its exact Resonator melody seed, motifs, chord progression, answers, contrasts, continuations, key/AHD plan, and emotional-note palette as reusable source material for this lane. Adapt it to the lane role instead of ignoring it. Pitched lanes may quote or transform the pitches directly; bass/harmony should support its harmonic/emotional relationships; drums should reflect its rhythmic statement/response shapes where appropriate.")
+                .AppendLine(Clip(state.ComposerDesign, MaxComposerDesignChars));
+        }
+
+        b.AppendLine()
             .AppendLine("ORDERED SECTION LIST");
 
         for (int i = 0; i < state.Sections.Count; i++)

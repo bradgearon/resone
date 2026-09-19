@@ -44,7 +44,7 @@ public sealed class QwenTtsServiceManager : IAsyncDisposable
     }
 
     private readonly ResoneSettings settings;
-    private readonly string root;
+    private readonly string aiRoot;
     private readonly HttpClient http;
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly Dictionary<QwenTtsServiceKind, Slot> slots = new()
@@ -54,10 +54,10 @@ public sealed class QwenTtsServiceManager : IAsyncDisposable
     };
     private bool disposed;
 
-    public QwenTtsServiceManager(ResoneSettings settings, string root, HttpClient http)
+    public QwenTtsServiceManager(ResoneSettings settings, string aiRoot, HttpClient http)
     {
         this.settings = settings;
-        this.root = Path.GetFullPath(root);
+        this.aiRoot = Path.GetFullPath(aiRoot);
         this.http = http;
     }
 
@@ -388,7 +388,7 @@ public sealed class QwenTtsServiceManager : IAsyncDisposable
         string rid = Rid();
         if (!settings.QwenTtsEngineDirectories.TryGetValue(rid, out string? relative) || string.IsNullOrWhiteSpace(relative))
             throw new PlatformNotSupportedException($"No Qwen TTS engine is configured for {rid}.");
-        string engine = ResolvePath(relative);
+        string engine = Wds.Resone.Api.AiRuntimeRoot.ResolveEngineDirectory("tts", relative);
         if (!Directory.Exists(engine)) throw new DirectoryNotFoundException("Qwen TTS engine directory was not found: " + engine);
         return engine;
     }
@@ -408,7 +408,7 @@ public sealed class QwenTtsServiceManager : IAsyncDisposable
     }
 
     private string ResolvePath(string configured)
-        => Path.GetFullPath(Path.IsPathRooted(configured) ? configured : Path.Combine(root, configured));
+        => Path.GetFullPath(Path.IsPathRooted(configured) ? configured : Path.Combine(aiRoot, configured));
 
     private static string Rid()
     {

@@ -1,6 +1,11 @@
 param()
 $ErrorActionPreference='Stop'
 $Root=Split-Path $PSScriptRoot -Parent
+$Manifest = Get-Content (Join-Path $Root 'config/runtime.json') -Raw | ConvertFrom-Json
+$LlamaPin = $Manifest.dependencyPins.'llama.cpp'
+if (-not $LlamaPin -or [string]::IsNullOrWhiteSpace($LlamaPin.gitRef)) { throw 'config/runtime.json must define dependencyPins.llama.cpp.gitRef.' }
+$AbiHeader = Get-Content (Join-Path $Root 'native/inference/llama_dynamic_abi.hpp') -Raw
+if ($AbiHeader -notmatch [regex]::Escape([string]$LlamaPin.gitRef)) { throw "llama_dynamic_abi.hpp is not pinned to the runtime manifest llama.cpp gitRef $($LlamaPin.gitRef)." }
 function Run([string]$Exe,[string[]]$Args){& $Exe @Args;if($LASTEXITCODE-ne 0){throw "$Exe failed ($LASTEXITCODE)"}}
 
 # This builds only Resone's tiny dynamic-loader bridge. It does NOT download,

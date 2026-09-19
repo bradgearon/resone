@@ -15,17 +15,17 @@ public sealed class ArrangementComposer(HttpClient http, ResoneSettings settings
         ("A#2",46,"open hat"), ("C#3",49,"crash"), ("D#3",51,"ride"),
         ("F2",41,"low tom"), ("A2",45,"mid tom"), ("D3",50,"high tom") ];
 
-    public Task<JsonObject> ComposeAsync(SongProject project, string laneId, string description, bool useAhd, CancellationToken token, Func<string, Task>? progress = null)
-        => ComposeCoreAsync(project, laneId, description, useAhd, null, token, progress);
+    public Task<JsonObject> ComposeAsync(SongProject project, string laneId, string description, bool useAhd, string composerOverview, CancellationToken token, Func<string, Task>? progress = null)
+        => ComposeCoreAsync(project, laneId, description, useAhd, null, composerOverview, token, progress);
 
     /// <summary>
     /// Full-song-only path. It uses the same proven lane arranger but gives it provisioned long-form context and
     /// allows one plain-text memory block after the notation. The regular ComposeAsync path never sees this contract.
     /// </summary>
     public Task<JsonObject> ComposeSongChunkAsync(SongProject project, string laneId, string description, bool useAhd, SongGenerationContext songContext, CancellationToken token, Func<string, Task>? progress = null)
-        => ComposeCoreAsync(project, laneId, description, useAhd, songContext, token, progress);
+        => ComposeCoreAsync(project, laneId, description, useAhd, songContext, "", token, progress);
 
-    private async Task<JsonObject> ComposeCoreAsync(SongProject project, string laneId, string description, bool useAhd, SongGenerationContext? songContext, CancellationToken token, Func<string, Task>? progress)
+    private async Task<JsonObject> ComposeCoreAsync(SongProject project, string laneId, string description, bool useAhd, SongGenerationContext? songContext, string composerOverview, CancellationToken token, Func<string, Task>? progress)
     {
         var instructions = MusicCompositionInstructions.Load(assetsRoot);
         if (string.IsNullOrWhiteSpace(instructions.ArrangementInstructions))
@@ -53,6 +53,15 @@ public sealed class ArrangementComposer(HttpClient http, ResoneSettings settings
             prompt += "\nSelected lane is a VOCAL MELODY. Generate monophonic, singable pitched Resonator notation only; do not emit lyrics, words, phonemes, or mode=drums. The lyrics/text and voice are rendered separately after the MIDI exists. Keep phrases human-singable, leave breathing space, avoid impossible overlapping vocal notes, and use rhythm/duration as intentional syllable and vowel timing.";
         else
             prompt += "\nSelected lane is pitched. Do not emit mode=drums.";
+
+        if (!string.IsNullOrWhiteSpace(composerOverview))
+        {
+            prompt += """
+
+EXISTING SONG COMPOSER OVERVIEW — PERSISTENT MUSICAL DNA.
+This piece was created from the composer overview supplied below. The user's new request is the requested modification, but preserve the overview's established tonal plan, emotional note palette, melody/motif identities, chord relationships, AHD activations, answers/contrasts/continuations, and other musical DNA unless the new request explicitly asks to change them. Use the overview as context for this revision; do not regenerate it and do not output it.
+""";
+        }
 
         if (songContext is not null)
         {
@@ -103,10 +112,12 @@ HANDOFF DISCIPLINE: Read OPEN COMPOSER COMMITMENTS in the supplied full-song con
         if (progress is not null) await progress(songContext is null ? "Composing · Directing…" : "Song · Directing section…").ConfigureAwait(false);
         string narrative = await MusicNarrativePlanner.CreateAsync(
             client, description, intervalGuide, useAhd, project.Bars, project.Tempo, project.Meter,
-            target.Notation, target.OriginalBrief, target.Prompts, LaneLength(target), songContext?.Packet ?? "", token).ConfigureAwait(false);
+            target.Notation, target.OriginalBrief, target.Prompts, LaneLength(target), songContext?.Packet ?? "", composerOverview, token).ConfigureAwait(false);
         string composerRequest = MusicNarrativePlanner.AppendNarrativePlan(request.ToJsonString(), narrative);
         if (songContext is not null)
             composerRequest += "\n\n" + songContext.Packet;
+        if (!string.IsNullOrWhiteSpace(composerOverview))
+            composerRequest += "\n\nEXISTING SONG COMPOSER OVERVIEW — PRESERVE UNLESS THE USER EXPLICITLY CHANGES IT\n" + composerOverview;
         var messages = new List<ChatMessage> { new("system",prompt), new("user",composerRequest) };
         if (progress is not null) await progress(songContext is null ? "Composing · Arranging…" : "Song · Arranging section…").ConfigureAwait(false);
         var text = await client.CompleteTextStreamingAsync(messages, songContext is null ? "MusicArrangement" : "SongChunkArrangement", null, token);

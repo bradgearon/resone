@@ -1,14 +1,86 @@
 {
+  "manifestVersion": 2,
+  "provisionAiRuntime": true,
   "useExistingStack": false,
-  "backend": "auto",
   "requireHashes": true,
+  "logging": {
+    "directory": "",
+    "retentionDays": 14
+  },
+  "updates": {
+    "enabled": false,
+    "currentVersion": "0.1.0-dev",
+    "channel": "stable",
+    "manifestUrl": "https://resone.io/api/updates/resone/stable.json",
+    "checkTimeoutSeconds": 8,
+    "downloadAttempts": 3,
+    "retryDelaySeconds": 2,
+    "failedUpdateRetryMinutes": 15,
+    "parentExitTimeoutSeconds": 60,
+    "relaunchHealthSeconds": 2,
+    "notifyAfterConsecutiveFailures": 3,
+    "manifestMaxBytes": 2097152,
+    "defaultArchiveMaxBytes": 2147483648,
+    "defaultExtractedMaxBytes": 4294967296,
+    "updaterExecutable": "wds.resone.updater.exe",
+    "launcherExecutable": "wds.resone.launcher.exe",
+    "updateWorkDirectory": "ResoneUpdate",
+    "requireHttps": true,
+    "requireHashes": true,
+    "verifyExtractedFiles": true,
+    "autoInstallInstallerArtifacts": true,
+    "preservePaths": [
+      "user"
+    ]
+  },
+  "dependencyPins": {
+    "llama.cpp": {
+      "repository": "https://github.com/ggerganov/llama.cpp.git",
+      "gitRef": "2d973636e292ee6f75fadcf08d29cb33511f509f"
+    },
+    "qwentts.cpp": {
+      "repository": "https://github.com/ServeurpersoCom/qwentts.cpp.git",
+      "gitRef": "a8a7716b530e49fed537c57711247c12fbbb903c"
+    },
+    "iPlug2": {
+      "repository": "https://github.com/iPlug2/iPlug2.git",
+      "gitRef": "d54f69050f517e43b941d88c2a170f0a840b9ee4"
+    },
+    "vst3sdk": {
+      "repository": "https://github.com/steinbergmedia/vst3sdk.git",
+      "gitRef": "9fad9770f2ae8542ab1a548a68c1ad1ac690abe0"
+    },
+    "vcpkg": {
+      "repository": "https://github.com/microsoft/vcpkg.git",
+      "gitRef": "1577f17ee57f42a0ef6d75bbb82cb37d0b76d7e8"
+    }
+  },
   "enginePacks": [
     {
-      "enabled": true,
+      "enabled": false,
+      "id": "llama-win-x64-nvidia",
+      "component": "llm",
+      "version": "1",
       "rid": "win-x64",
-      "backend": "dynamic",
-      "directory": "engines/llm/llama-cpp-dynamic-win-x64",
-      "url": "https://YOUR-DOWNLOAD-HOST/llama-cpp-dynamic-win-x64.zip",
+      "platform": "nvidia",
+      "directory": "engines/llm/llama-cpp-nvidia-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/llama-cpp-nvidia-win-x64-v1.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "stripComponents": 0,
+      "requiredFiles": [
+        "llama.dll",
+        "ggml.dll"
+      ]
+    },
+    {
+      "enabled": false,
+      "id": "llama-win-x64-amd",
+      "component": "llm",
+      "version": "1",
+      "rid": "win-x64",
+      "platform": "amd",
+      "directory": "engines/llm/llama-cpp-amd-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/llama-cpp-amd-win-x64-v1.zip",
       "sha256": "REPLACE_WITH_64_HEX_SHA256",
       "requiredFiles": [
         "llama.dll",
@@ -16,22 +88,72 @@
       ]
     },
     {
-      "enabled": true,
+      "enabled": false,
+      "id": "llama-win-x64-intel",
+      "component": "llm",
+      "version": "1",
       "rid": "win-x64",
-      "backend": "cpu",
+      "platform": "intel",
+      "directory": "engines/llm/llama-cpp-intel-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/llama-cpp-intel-win-x64-v1.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "requiredFiles": [
+        "llama.dll",
+        "ggml.dll"
+      ]
+    },
+    {
+      "enabled": false,
+      "id": "llama-win-x64-cpu",
+      "component": "llm",
+      "version": "1",
+      "rid": "win-x64",
+      "platform": "cpu",
+      "directory": "engines/llm/llama-cpp-cpu-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/llama-cpp-cpu-win-x64-v1.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "requiredFiles": [
+        "llama.dll",
+        "ggml.dll"
+      ]
+    },
+    {
+      "enabled": false,
+      "id": "whisper-win-x64-nvidia",
+      "component": "asr",
+      "version": "1",
+      "rid": "win-x64",
+      "platform": "nvidia",
       "directory": "engines/asr/whispercpp-nvidia-win-x64",
-      "url": "https://YOUR-DOWNLOAD-HOST/whispercpp-win-x64.zip",
+      "url": "https://YOUR-DOWNLOAD-HOST/whispercpp-nvidia-win-x64-v1.zip",
       "sha256": "REPLACE_WITH_64_HEX_SHA256",
       "requiredFiles": [
         "whisper-server.exe"
       ]
     },
     {
-      "enabled": true,
+      "enabled": false,
+      "id": "whisper-win-x64-cpu",
+      "component": "asr",
+      "version": "1",
       "rid": "win-x64",
-      "backend": "dynamic",
+      "platform": "cpu",
+      "directory": "engines/asr/whispercpp-cpu-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/whispercpp-cpu-win-x64-v1.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "requiredFiles": [
+        "whisper-server.exe"
+      ]
+    },
+    {
+      "enabled": false,
+      "id": "qwentts-win-x64-nvidia",
+      "component": "tts",
+      "version": "1",
+      "rid": "win-x64",
+      "platform": "nvidia",
       "directory": "engines/tts/qwenttscpp-nvidia-win-x64",
-      "url": "https://YOUR-DOWNLOAD-HOST/qwenttscpp-nvidia-win-x64-server.zip",
+      "url": "https://YOUR-DOWNLOAD-HOST/qwenttscpp-nvidia-win-x64-v1.zip",
       "sha256": "REPLACE_WITH_64_HEX_SHA256",
       "requiredFiles": [
         "qwen-server.exe",
@@ -40,38 +162,65 @@
         "ggml-cpu.dll",
         "ggml-cuda.dll"
       ]
+    },
+    {
+      "enabled": false,
+      "id": "qwentts-win-x64-cpu",
+      "component": "tts",
+      "version": "1",
+      "rid": "win-x64",
+      "platform": "cpu",
+      "directory": "engines/tts/qwenttscpp-cpu-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/qwenttscpp-cpu-win-x64-v1.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "requiredFiles": [
+        "qwen-server.exe",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll"
+      ]
     }
   ],
   "models": [
     {
+      "enabled": false,
+      "id": "gemma-4-e4b-q6k",
+      "version": "1",
       "path": "models/llm/gemma-4-E4B-it-Q6_K.gguf",
-      "url": "https://YOUR-DOWNLOAD-HOST/gemma-4-E4B-it-Q6_K.gguf",
-      "sha256": "REPLACE_WITH_64_HEX_SHA256",
-      "enabled": true
-    },
-    {
-      "path": "models/asr/ggml-large-v3-turbo.bin",
-      "url": "https://YOUR-DOWNLOAD-HOST/ggml-large-v3-turbo.bin",
-      "sha256": "REPLACE_WITH_64_HEX_SHA256",
-      "enabled": true
-    },
-    {
-      "path": "models/tts/qwen-talker-0.6b-base-Q8_0.gguf",
-      "url": "https://YOUR-DOWNLOAD-HOST/qwen-talker-0.6b-base-Q8_0.gguf",
-      "sha256": "REPLACE_WITH_64_HEX_SHA256",
-      "enabled": true
-    },
-    {
-      "path": "models/tts/qwen-talker-1.7b-voicedesign-Q8_0.gguf",
-      "url": "https://YOUR-DOWNLOAD-HOST/qwen-talker-1.7b-voicedesign-Q8_0.gguf",
-      "enabled": true,
+      "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q6_K.gguf",
       "sha256": "REPLACE_WITH_64_HEX_SHA256"
     },
     {
+      "enabled": false,
+      "id": "whisper-large-v3-turbo",
+      "version": "1",
+      "path": "models/asr/ggml-large-v3-turbo.bin",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256"
+    },
+    {
+      "enabled": false,
+      "id": "qwen-talker-base-0.6b-q8",
+      "version": "1",
+      "path": "models/tts/qwen-talker-0.6b-base-Q8_0.gguf",
+      "url": "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-talker-0.6b-base-Q8_0.gguf",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256"
+    },
+    {
+      "enabled": false,
+      "id": "qwen-talker-voicedesign-1.7b-q8",
+      "version": "1",
+      "path": "models/tts/qwen-talker-1.7b-voicedesign-Q8_0.gguf",
+      "url": "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-talker-1.7b-voicedesign-Q8_0.gguf",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256"
+    },
+    {
+      "enabled": false,
+      "id": "qwen-tokenizer-12hz-q8",
+      "version": "1",
       "path": "models/tts/qwen-tokenizer-12hz-Q8_0.gguf",
-      "url": "https://YOUR-DOWNLOAD-HOST/qwen-tokenizer-12hz-Q8_0.gguf",
-      "sha256": "REPLACE_WITH_64_HEX_SHA256",
-      "enabled": true
+      "url": "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-tokenizer-12hz-Q8_0.gguf",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256"
     }
   ],
   "services": []

@@ -8,6 +8,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "wds.resone.api", "src\wds.r
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "wds.resone.launcher", "src\wds.resone.launcher\wds.resone.launcher.csproj", "{470087F2-9373-45E2-88F7-BE538C50C6B1}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "wds.resone.updater", "src\wds.resone.updater\wds.resone.updater.csproj", "{B7E83E8C-4D66-44DA-B64F-AC9173308C40}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,6 +28,10 @@ Global
 		{470087F2-9373-45E2-88F7-BE538C50C6B1}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{470087F2-9373-45E2-88F7-BE538C50C6B1}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{470087F2-9373-45E2-88F7-BE538C50C6B1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B7E83E8C-4D66-44DA-B64F-AC9173308C40}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B7E83E8C-4D66-44DA-B64F-AC9173308C40}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B7E83E8C-4D66-44DA-B64F-AC9173308C40}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B7E83E8C-4D66-44DA-B64F-AC9173308C40}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

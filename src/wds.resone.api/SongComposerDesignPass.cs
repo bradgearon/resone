@@ -24,6 +24,7 @@ public static class SongComposerDesignPass
         string meter,
         int targetBars,
         bool useAhd,
+        string existingComposerOverview,
         CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(brief)) throw new ArgumentException("A song brief is required.", nameof(brief));
@@ -86,8 +87,17 @@ NOTATION RULES
             .AppendLine($"Meter: {meter}")
             .AppendLine($"Approximate total bars: {targetBars}")
             .AppendLine($"AHD: {(useAhd ? "ENABLED — purposeful out-of-key/activated material is allowed" : "disabled")}")
-            .AppendLine()
-            .AppendLine("RESone COMPOSER CORE INSTRUCTIONS")
+            .AppendLine();
+
+        if (!string.IsNullOrWhiteSpace(existingComposerOverview))
+        {
+            user.AppendLine("EXISTING SONG COMPOSER OVERVIEW")
+                .AppendLine("This is the established musical DNA from the song being modified. Keep its successful tonal plan, emotional note palette, motifs, chord relationships, and response logic unless the new request explicitly changes them. Produce an updated composer design that remains recognizably the same piece.")
+                .AppendLine(existingComposerOverview.Length > 24000 ? existingComposerOverview[..24000] : existingComposerOverview)
+                .AppendLine();
+        }
+
+        user.AppendLine("RESone COMPOSER CORE INSTRUCTIONS")
             .AppendLine(instructions.SystemPrompt)
             .AppendLine()
             .AppendLine("RESone COMPOSER REALIZATION / RESPONSE RULES")
@@ -101,7 +111,7 @@ NOTATION RULES
             .ToString();
 
         string design = (await model.CompleteTextStreamingAsync(
-            [new ChatMessage("system", system), new ChatMessage("user", user)],
+            [new ChatMessage("system", system), new ChatMessage("user", user.ToString())],
             "SongComposerDesign",
             null,
             token).ConfigureAwait(false)).Trim();

@@ -1,5 +1,6 @@
 #pragma once
 #include "Model.hpp"
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <filesystem>
@@ -22,7 +23,9 @@ class AudioEngine {
     std::atomic<uint64_t> consumed_{};
     std::mutex mutex_;
     std::atomic<uint64_t> wakeSerial_{};
-    std::optional<Song> pending_;
+    struct PlayRequest { Song song; double startSeconds{}; bool paused{}; };
+    std::optional<PlayRequest> pending_;
+    std::array<std::atomic<float>, 16> laneGain_{};
     std::filesystem::path home_;
     std::function<void(Json)> emit_;
     std::thread worker_;
@@ -35,7 +38,8 @@ class AudioEngine {
   public:
     AudioEngine(std::filesystem::path home, std::function<void(Json)> emit);
     ~AudioEngine();
-    void play(Song song);
+    void play(Song song, double startSeconds = 0.0, bool paused = false);
+    void mixer(const Json &state);
     void stop();
     void pause(bool value);
     void sampleRate(int rate);

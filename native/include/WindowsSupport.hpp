@@ -10,6 +10,7 @@
 #include <mmsystem.h>
 #include <mutex>
 #include <shlobj.h>
+#include <string_view>
 namespace resone {
 // Load a Win32 icon from the module that actually contains Resone's code.
 // This matters for VST3: GetModuleHandle(nullptr) returns the DAW executable,
@@ -179,6 +180,50 @@ inline std::filesystem::path webIndex(const std::filesystem::path &root) {
     }
     return {};
 }
+inline std::filesystem::path dailyLogPath() {
+    wchar_t configured[32768]{};
+    std::filesystem::path directory;
+    const auto n = GetEnvironmentVariableW(L"RESONE_LOG_DIR", configured, 32768);
+    if (n && n < 32768) {
+        directory = std::filesystem::path(configured);
+    } else {
+        PWSTR local{};
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) {
+            directory = std::filesystem::path(local) / L"Wds" / L"Logs" / L"Resone";
+            CoTaskMemFree(local);
+        } else {
+            directory = std::filesystem::temp_directory_path() / L"Wds" / L"Logs" / L"Resone";
+        }
+    }
+    std::filesystem::create_directories(directory);
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t fileName[64]{};
+    swprintf_s(fileName, L"resone-%04u-%02u-%02u.log", now.wYear, now.wMonth, now.wDay);
+    return directory / fileName;
+}
+inline void appendDailyLog(std::string_view area, std::string_view message) noexcept {
+    HANDLE gate = nullptr;
+    bool held = false;
+    try {
+        gate = CreateMutexW(nullptr, FALSE, L"Local\\Wds.Resone.Log");
+        if (gate) {
+            const auto wait = WaitForSingleObject(gate, 5000);
+            held = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
+        }
+        SYSTEMTIME now{};
+        GetLocalTime(&now);
+        char stamp[64]{};
+        sprintf_s(stamp, "%04u-%02u-%02uT%02u:%02u:%02u.%03u",
+                  now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
+        std::ofstream out(dailyLogPath(), std::ios::app | std::ios::binary);
+        if (out) out << stamp << '\t' << GetCurrentProcessId() << '\t' << area << '\t' << message << "\r\n";
+    } catch (...) {
+    }
+    if (held && gate) ReleaseMutex(gate);
+    if (gate) CloseHandle(gate);
+}
+
 inline std::filesystem::path preferences() {
     PWSTR local{};
     SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local);

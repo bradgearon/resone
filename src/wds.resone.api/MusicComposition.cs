@@ -104,6 +104,7 @@ namespace Wds.Resone.Api.Music
                 Array.Empty<string>(),
                 0,
                 "",
+                "",
                 token).ConfigureAwait(false);
             string composerRequest = MusicNarrativePlanner.AppendNarrativePlan(
                 JsonSerializer.Serialize(request, ResoneJson.Default.MusicCompositionRequest) + "\n" + BuildDurationInstruction(request),

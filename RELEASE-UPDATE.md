@@ -145,3 +145,61 @@ Changes:
 - `/h/` received a modest additional breath-presence lift while remaining a one-pass aspirate.
 - A 2.5 ms fade is applied only to the first audible samples of the final vocal output to suppress the startup glip without softening later consonants.
 - `scripts/build-windows.ps1` now detects a running `wds.resone.launcher`. Normal development builds continue into `build/` without touching the live installation, so the launcher can stay running. Close the launcher and run the build again to deploy; `-ForceDeploy` explicitly overrides this protection.
+
+## Song Composer Design Pass
+- Added a saved, default-on **Composer design pass** checkbox beside Song mode.
+- Song generation can now run a non-track-scoped composer pass after the producer outline and before section/lane generation.
+- The pass uses the normal Resone composer instructions/references to create a shared emotional note palette, key plan, Resonator melody seed, motifs, chord progression, and 1-3 Answer/Contrast/Continuation variants total across all three response types.
+- AHD is explicitly available for purposeful out-of-key material when enabled; melody material defaults around octave 3, normally occupies octaves 3-4, may peak in octave 5, and never writes octave 6+ in the design packet.
+- The resulting design packet is stored in `SongGenerationState` and injected into every later track composer request.
+
+## 2026-09-18 — shared AI_ROOT launcher provisioning
+
+- Moved engine/model provisioning responsibility into the launcher around a shared `AI_ROOT` tree so Resone and Six Stars can share one copy of large AI assets.
+- Added launcher `--ai-root <path>` persistence plus `AI_ROOT` / legacy `WDS_AI_ROOT` environment resolution. Default is `%LOCALAPPDATA%/Wds/AI`.
+- Added hardware-family selection (`nvidia`, `amd`, `intel`, `apple`, `cpu`, `dynamic`) with Windows display-adapter vendor detection and `AI_PLATFORM` override.
+- Extended `config/runtime.json` into a versioned package manifest: engine/model `id`, `version`, HTTPS URL, SHA-256, component/RID/platform, required files, ZIP strip depth, and centralized C++ dependency pins.
+- Engine installs are downloaded to `AI_ROOT/work`, SHA-256 verified, safely extracted, required-file checked, and atomically swapped. Each component writes `engines/<component>/.active` so appsettings does not need vendor-specific runtime paths.
+- Model downloads are resumable and managed by ID/version/URL/hash receipts. Any managed version/URL/hash change intentionally redownloads the model before replacement.
+- Runtime resolution prefers launcher-managed `AI_ROOT` assets but falls back to existing source/install-tree assets during migration/development.
+- `build-qwentts-nvidia-win-x64.ps1`, `build-inference-pack.ps1`, and Windows dependency checkouts now read pinned git refs from `config/runtime.json` instead of duplicating commit constants in build scripts.
+- Added `scripts/package-ai-engine.ps1`, `scripts/hash-ai-model.ps1`, and `docs/ai-runtime-provisioning.md` for publishing/versioning packages.
+
+## Launcher-owned application updater
+
+- Added `wds.resone.updater.exe`, published beside the launcher.
+- Launcher checks a JSON-configured HTTPS release manifest before opening the UI/AI stack.
+- Updater runs from an external temporary runner so it can replace the installed launcher/updater safely.
+- Update archives are SHA-256 verified, safely extracted, critical extracted files are hashed again, and the staged payload version must match the remote manifest.
+- Downloads retry on transport/hash failure; exhausted retries become a recorded update failure rather than silently installing bad bytes.
+- Archive installs preserve configured paths, swap through a backup, and roll back if installation or new-launcher startup fails.
+- Failed updates relaunch the old/current launcher with a one-shot skip flag; later launches retry after configured backoff. Repeated failures produce tray warnings.
+- Remote artifacts also support `installMode: installer`, ready for the future VST3 installer path.
+- `scripts/package-resone-update.ps1` creates a version-stamped ZIP, archive SHA-256, critical file hashes, and remote manifest.
+- `config/update-manifest.example.json` documents the resone.io release format.
+
+## Unified logging
+
+- Replaced JSONL host trace, per-call LLM JSON files, startup-per-process logs, and `whisper-cpp.log` with one cross-process daily text log.
+- Default path: `%LOCALAPPDATA%\Wds\Logs\Resone\resone-YYYY-MM-DD.log`.
+- Runtime JSON controls log directory and retention.
+
+## 2026-09-19 — voice-source layout + interactive piano roll
+
+- The Vocals lane now uses the existing header sound selector as **Voice** (`Oohs`, saved voices, `＋ New voice…`); the vocal editor is a full-width lyrics field plus Render button, avoiding the clipped voice controls.
+- Timeline/grid clicks move the playback cursor. Playing or paused transport seeks through a native seek-aware render path; stopped transport remembers the cursor for the next Play.
+- Volume, mute, and solo are live mixer operations and no longer stop/restart transport. FluidSynth lanes use channel-volume CC and rendered vocal WAVs use the same atomic per-lane gain state.
+- Piano-roll lanes use semitone rows and persist Resonator `key=` information as lane/key-region metadata. In-key rows receive the lane accent tint, out-of-key rows are darker, tonic rows are emphasized, and the selected lane shows the current key/tonic for the cursor region.
+- Ctrl+wheel zooms horizontally; Alt+wheel zooms vertically. Horizontal zoom, vertical zoom, and per-lane heights persist in local preferences.
+- Drag the bottom edge of the left lane strip to resize an individual lane.
+- Notes are selectable. Delete/Backspace removes the selected note. Double-click adds a one-quarter-note note snapped to the nearest quarter-note position; Alt+double-click bypasses the time snap. Dragging moves notes and dragging the right edge changes duration; Alt bypasses time snapping while dragging.
+- At sufficient vertical zoom, note blocks show pitch labels such as `C#4`.
+
+## UI startup repair (2026-09-19)
+
+- Fixed the piano-roll scroll container DOM contract: `app.js` expected `#rollContent`, but the HTML only exposed `.rollContent`. The resulting null `addEventListener` exception stopped script execution before `render()` and `send('ready')`, leaving the app empty and all controls inert.
+- Removed the stale `#newVoice` lookup left over from moving voice creation into the shared Instrument/Voice selector.
+- Added `tests/ui-dom-contract-regression.py`, which fails if any `$('<id>')` reference in `app.js` does not exist in `index.html`.
+- Clamped rendered lane height to the same minimum used by lane headers so saved/Alt vertical zoom cannot make piano-roll geometry disagree with the left lane controls.
+- Added early browser `error` / `unhandledrejection` reporting. UI bootstrap failures now update the status line and send `uiDiagnostic` directly through the native bridge even when the normal ready handshake never completes.
+- Added native UI diagnostics to the same daily rolling Resone text log (`%LOCALAPPDATA%\Wds\Logs\Resone\resone-YYYY-MM-DD.log`, or `RESONE_LOG_DIR`). It uses the same named cross-process mutex as the managed logger.

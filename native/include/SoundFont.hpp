@@ -1,6 +1,7 @@
 #pragma once
 #include "DynamicLibrary.hpp"
 #include "Model.hpp"
+#include <cmath>
 namespace resone {
 /// FluidSynth is dynamically linked, retaining its LGPL replacement boundary.
 class SoundFont {
@@ -16,6 +17,7 @@ class SoundFont {
     int (*program_)(void *, int, int, int, int){};
     int (*on_)(void *, int, int, int){};
     int (*off_)(void *, int, int){};
+    int (*cc_)(void *, int, int, int){};
     int (*write_)(void *, int, void *, int, int, void *, int, int){};
     int (*allOff_)(void *, int){};
 
@@ -49,6 +51,7 @@ class SoundFont {
             program_ = lib_.symbol<decltype(program_)>("fluid_synth_program_select");
             on_ = lib_.symbol<decltype(on_)>("fluid_synth_noteon");
             off_ = lib_.symbol<decltype(off_)>("fluid_synth_noteoff");
+            cc_ = lib_.symbol<decltype(cc_)>("fluid_synth_cc");
             write_ = lib_.symbol<decltype(write_)>("fluid_synth_write_float");
             allOff_ = lib_.symbol<decltype(allOff_)>("fluid_synth_all_sounds_off");
         } catch (...) {
@@ -88,6 +91,9 @@ class SoundFont {
     }
     void off(int c, int n) {
         off_(synth_, c, n);
+    }
+    void volume(int c, float gain) {
+        cc_(synth_, c, 7, std::clamp(static_cast<int>(std::lround(std::clamp(gain, 0.0f, 1.0f) * 127.0f)), 0, 127));
     }
     void render(float *interleaved, int frames) {
         if (write_(synth_, frames, interleaved, 0, 2, interleaved, 1, 2) != 0)

@@ -342,8 +342,12 @@ bool abort_eval(void * opaque) {
 // The configured context size is the model's active window, not an output cap.
 RESONE_API int resone_llama_bridge_abi() { return 3; }
 
+#ifndef RESONE_LLAMA_BRIDGE_BUILD_ID
+#define RESONE_LLAMA_BRIDGE_BUILD_ID "dev"
+#endif
+
 RESONE_API const char * resone_llama_bridge_build_id() {
-    return "resone-llama-bridge/3 llama.cpp-b9870 unlimited-output";
+    return "resone-llama-bridge/3 llama.cpp-b9870 unlimited-output source=" RESONE_LLAMA_BRIDGE_BUILD_ID;
 }
 
 RESONE_API void * resone_llama_open(const char * engine_dir,

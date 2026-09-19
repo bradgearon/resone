@@ -8,9 +8,13 @@ const manager=read('src/wds.resone.api/VocalSinging/QwenTtsServiceManager.cs');
 const store=read('src/wds.resone.api/VocalSinging/VoiceLibrary.cs');
 const melodies=read('src/wds.resone.api/VocalSinging/VoicePreviewMelodies.cs');
 const settings=read('src/wds.resone.api/Contracts.cs');
-for(const id of ['vocalLyrics','vocalVoice','newVoice','voiceDesigner','voiceDesignPrompt','voiceSampleText','voiceDrop','voiceSingingPreview','voicePreviewMelody','voiceGenerate','voicePlay','voiceName','voiceOk','voiceCancel'])
+for(const id of ['instrument','soundSourceLabel','vocalLyrics','renderVocals','voiceDesigner','voiceDesignPrompt','voiceSampleText','voiceDrop','voiceSingingPreview','voicePreviewMelody','voiceGenerate','voicePlay','voiceName','voiceOk','voiceCancel'])
   must(html.includes(`id="${id}"`),`missing voice UI ${id}`);
 must(html.includes("Thank you for using Resone by We Develop Software, I can't wait to hear what you create."),'default sample speech missing');
+must(!html.includes('id="vocalVoice"') && !html.includes('id="newVoice"'),'legacy cramped voice controls should not remain in the lyrics panel');
+must(js.includes("VOCAL_SOURCE_OOHS") && js.includes("VOCAL_SOURCE_NEW"),'header vocal source selector modes missing');
+must(js.includes("sourceLabel.textContent = 'Voice'") && js.includes("new Option('Oohs'") && js.includes("new Option('＋ New voice…'"),'voice header selector options missing');
+must(js.includes("target.renderedVocalPath = ''") && js.includes("target.program = VOCAL_OOHS_PROGRAM"),'switching back to Oohs must disable rendered vocal playback');
 for(const op of ['voiceLibraryList','voiceSelect','voiceDesignOpen','voiceDesignPreview','voiceImportPreview','voiceSavePreview','voiceDiscardPreview','voiceDesignClose','voiceServiceActivity','renderVocals'])
   must(js.includes(`'${op}'`)||js.includes(`"${op}"`),`missing app voice operation ${op}`);
 must(js.includes("ondrop") && js.includes('importVoiceWav'),'WAV drag/drop import missing');

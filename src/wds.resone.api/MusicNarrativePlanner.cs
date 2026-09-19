@@ -27,6 +27,7 @@ public static class MusicNarrativePlanner
         IReadOnlyList<string> promptHistory,
         double existingLengthBeats,
         string songGenerationContext,
+        string composerOverview,
         CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(userRequest))
@@ -118,6 +119,14 @@ Required-gesture summary: a compact checklist of the interval/perspective gestur
             user.AppendLine("FULL SONG CONTEXT")
                 .AppendLine("The following context comes from Resone's deterministic song-generation provisioner. Use it to keep this section consistent with the larger piece. Do not rewrite the global song design; plan the selected lane/chunk so it fulfills the assigned section and preserves exact musical memories when they are called for.")
                 .AppendLine(songGenerationContext.Length > 24000 ? songGenerationContext[..24000] : songGenerationContext)
+                .AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(composerOverview))
+        {
+            user.AppendLine("EXISTING SONG COMPOSER OVERVIEW")
+                .AppendLine("This is persistent musical DNA from the song's original composer design pass. Use it when planning this revision. Preserve established tonal centers, emotional note palette, motifs, chord relationships, AHD activations, and designed statement/answer/contrast/continuation behavior unless the user's new request explicitly changes them.")
+                .AppendLine(composerOverview.Length > 24000 ? composerOverview[..24000] : composerOverview)
                 .AppendLine();
         }
 

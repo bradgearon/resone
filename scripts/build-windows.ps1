@@ -1,6 +1,12 @@
 param([string]$InstallDir = "$env:LOCALAPPDATA\Wds\Resone", [string]$SixStarsRuntimeRoot = "", [switch]$CustomerRelease, [switch]$ForceDeploy, [string]$LicensePublicKeyFile = "", [string]$LicenseApiUrl = "", [string]$RuntimeManifest = "")
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
+$SourceRuntimeManifest = Get-Content (Join-Path $Root 'config/runtime.json') -Raw | ConvertFrom-Json
+function DependencyPin([string]$Name) {
+  $Pin = $SourceRuntimeManifest.dependencyPins.$Name
+  if (-not $Pin -or [string]::IsNullOrWhiteSpace($Pin.repository) -or [string]::IsNullOrWhiteSpace($Pin.gitRef)) { throw "config/runtime.json is missing dependency pin: $Name" }
+  return $Pin
+}
 $PublishFlags = @()
 $RunningLauncher = @(Get-Process -Name 'wds.resone.launcher' -ErrorAction SilentlyContinue)
 $DeployInstall = $CustomerRelease -or $ForceDeploy -or $RunningLauncher.Count -eq 0
@@ -15,17 +21,63 @@ if ($CustomerRelease) {
   if (!$LicenseApiUrl.StartsWith('https://')) { throw 'Supply -LicenseApiUrl with the deployed HTTPS licensing endpoint.' }
   if (!(Test-Path $RuntimeManifest)) { throw 'Supply -RuntimeManifest with configured, hashed engine packs and models.' }
   $Manifest = Get-Content $RuntimeManifest -Raw | ConvertFrom-Json
-  if ($Manifest.useExistingStack -or !$Manifest.requireHashes) { throw 'Customer manifest must own its stack and require hashes.' }
-  foreach ($Item in @($Manifest.enginePacks) + @($Manifest.models | Where-Object enabled)) {
-    if ($Item.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or !$Item.url.StartsWith('https://')) { throw 'Every download needs HTTPS and its actual SHA256.' }
+  if ($Manifest.useExistingStack -or $Manifest.provisionAiRuntime -eq $false -or !$Manifest.requireHashes) { throw 'Customer manifest must own/provision its stack and require hashes.' }
+  foreach ($Item in @($Manifest.enginePacks | Where-Object enabled) + @($Manifest.models | Where-Object enabled)) {
+    if ([string]::IsNullOrWhiteSpace($Item.id) -or [string]::IsNullOrWhiteSpace($Item.version)) { throw 'Every enabled AI package needs id and version.' }
+    if ($Item.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or !$Item.url.StartsWith('https://')) { throw 'Every enabled AI download needs HTTPS and its actual SHA256.' }
   }
-  if (!($Manifest.enginePacks | Where-Object { $_.enabled -ne $false -and $_.rid -eq 'win-x64' -and $_.directory -eq 'engines/llm/llama-cpp-dynamic-win-x64' })) { throw 'Supply a Windows x64 prebuilt llama.cpp pack targeting engines/llm/llama-cpp-dynamic-win-x64.' }
+  if (!($Manifest.enginePacks | Where-Object { $_.enabled -eq $true -and $_.rid -eq 'win-x64' -and $_.component -eq 'llm' })) { throw 'Supply at least one enabled Windows x64 LLM engine pack.' }
   if (Test-Path $InstallDir) { if (Get-ChildItem $InstallDir -Force) { throw 'Use an empty staging directory for CustomerRelease so old instructions/logs cannot ship.' } }
   if ($SixStarsRuntimeRoot) { throw 'Customer releases use downloadable engine packs; do not bundle Six Stars runtime folders.' }
   $PublishFlags = @('-p:CustomerRelease=true',"-p:LicensePublicKeyFile=$([System.IO.Path]::GetFullPath($LicensePublicKeyFile))")
-  foreach ($Dir in @('build/api','build/launcher')) { if (Test-Path "$Root/$Dir") { Remove-Item "$Root/$Dir" -Recurse -Force } }
+  foreach ($Dir in @('build/api','build/launcher','build/updater')) { if (Test-Path "$Root/$Dir") { Remove-Item "$Root/$Dir" -Recurse -Force } }
 }
 function Run([string]$Exe, [string[]]$Arguments) { & $Exe @Arguments; if ($LASTEXITCODE -ne 0) { throw "$Exe failed ($LASTEXITCODE)" } }
+function Get-LauncherSourceFingerprint {
+  $Files = @()
+  foreach ($Dir in @("$Root/src/wds.resone.launcher", "$Root/src/wds.resone.api")) {
+    if (Test-Path $Dir) {
+      $Files += Get-ChildItem $Dir -Recurse -File | Where-Object {
+        $_.FullName -notmatch '[\\/](bin|obj)[\\/]' -and $_.Extension -in @('.cs','.csproj','.props','.targets')
+      }
+    }
+  }
+  foreach ($Path in @("$Root/Directory.Build.props", "$Root/global.json", "$Root/src/wds.resone.ui/resources/Resone.ico")) {
+    if (Test-Path $Path -PathType Leaf) { $Files += Get-Item $Path }
+  }
+  $Records = foreach ($File in ($Files | Sort-Object FullName -Unique)) {
+    $Relative = $File.FullName.Substring($Root.Length).TrimStart([char[]]@('\','/')).Replace('\','/')
+    $Hash = (Get-FileHash $File.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$Relative=$Hash"
+  }
+  $Bytes = [System.Text.Encoding]::UTF8.GetBytes(($Records -join "`n"))
+  $Sha = [System.Security.Cryptography.SHA256]::Create()
+  try { return -join ($Sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }) }
+  finally { $Sha.Dispose() }
+}
+function Get-BridgeSourceFingerprint {
+  $Files = @()
+  foreach ($Dir in @("$Root/native/inference", "$Root/native/vendor")) {
+    if (Test-Path $Dir) {
+      $Files += Get-ChildItem $Dir -Recurse -File | Where-Object {
+        $_.Extension -in @('.c','.cc','.cpp','.cxx','.h','.hpp','.inl')
+      }
+    }
+  }
+  foreach ($Path in @("$Root/src/wds.resone.ui/CMakeLists.txt", "$Root/native/inference/CMakeLists.txt")) {
+    if (Test-Path $Path -PathType Leaf) { $Files += Get-Item $Path }
+  }
+  $Records = foreach ($File in ($Files | Sort-Object FullName -Unique)) {
+    $Relative = $File.FullName.Substring($Root.Length).TrimStart([char[]]@('\','/')).Replace('\','/')
+    $Hash = (Get-FileHash $File.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$Relative=$Hash"
+  }
+  $Bytes = [System.Text.Encoding]::UTF8.GetBytes(($Records -join "`n"))
+  $Sha = [System.Security.Cryptography.SHA256]::Create()
+  try { return -join ($Sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }) }
+  finally { $Sha.Dispose() }
+}
+
 function Test-WindowsIconResource([string]$BinaryPath, [int]$ResourceId = 40003) {
   if (!(Test-Path $BinaryPath -PathType Leaf)) { return $false }
   if (-not ('Resone.NativeResourceCheckV2' -as [type])) {
@@ -96,14 +148,62 @@ New-Item -ItemType Directory -Force "$Root/third_party" | Out-Null
 if ($DeployInstall) { New-Item -ItemType Directory -Force $InstallDir | Out-Null }
 # Never mutate the running installation during a build-only pass.
 if ($DeployInstall) { Remove-Item "$InstallDir/resone_inference.dll" -Force -ErrorAction SilentlyContinue }
-Checkout 'https://github.com/iPlug2/iPlug2.git' 'd54f69050f517e43b941d88c2a170f0a840b9ee4' "$Root/third_party/iPlug2"
-Checkout 'https://github.com/steinbergmedia/vst3sdk.git' '9fad9770f2ae8542ab1a548a68c1ad1ac690abe0' "$Root/third_party/iPlug2/Dependencies/IPlug/VST3_SDK"
+$IPlug2Pin = DependencyPin 'iPlug2'
+$Vst3Pin = DependencyPin 'vst3sdk'
+$VcpkgPin = DependencyPin 'vcpkg'
+Checkout $IPlug2Pin.repository $IPlug2Pin.gitRef "$Root/third_party/iPlug2"
+Checkout $Vst3Pin.repository $Vst3Pin.gitRef "$Root/third_party/iPlug2/Dependencies/IPlug/VST3_SDK"
 Run git @('-C',"$Root/third_party/iPlug2/Dependencies/IPlug/VST3_SDK",'submodule','update','--init','base','pluginterfaces','public.sdk','cmake')
-Checkout 'https://github.com/microsoft/vcpkg.git' '1577f17ee57f42a0ef6d75bbb82cb37d0b76d7e8' "$Root/third_party/vcpkg"
+Checkout $VcpkgPin.repository $VcpkgPin.gitRef "$Root/third_party/vcpkg"
 Run "$Root/third_party/vcpkg/bootstrap-vcpkg.bat" @('-disableMetrics')
 Run "$Root/third_party/vcpkg/vcpkg.exe" @('install','fluidsynth:x64-windows','--classic')
 Run dotnet (@('publish',"$Root/src/wds.resone.api/wds.resone.api.csproj",'-c','Release','-r','win-x64','--self-contained','true','-o',"$Root/build/api") + $PublishFlags)
-Run dotnet (@('publish',"$Root/src/wds.resone.launcher/wds.resone.launcher.csproj",'-c','Release','-r','win-x64','--self-contained','true','-o',"$Root/build/launcher") + $PublishFlags)
+
+$LauncherOutputDir = "$Root/build/launcher"
+$LauncherPrimaryDir = $LauncherOutputDir
+$LauncherNextDir = "$Root/build/launcher-next"
+$LauncherExe = Join-Path $LauncherPrimaryDir 'wds.resone.launcher.exe'
+$LauncherFingerprint = Get-LauncherSourceFingerprint
+$LauncherTargetLocked = $false
+$LauncherTargetFullPath = [System.IO.Path]::GetFullPath($LauncherExe)
+foreach ($Process in $RunningLauncher) {
+  try {
+    if ($Process.Path -and [System.IO.Path]::GetFullPath($Process.Path) -eq $LauncherTargetFullPath) { $LauncherTargetLocked = $true; break }
+  }
+  catch { }
+}
+
+$SkipLauncherPublish = $false
+if ($RunningLauncher.Count -gt 0 -and !$CustomerRelease) {
+  $LauncherCandidates = @($LauncherPrimaryDir)
+  if ($LauncherTargetLocked) { $LauncherCandidates += $LauncherNextDir }
+  foreach ($Candidate in $LauncherCandidates) {
+    $CandidateExe = Join-Path $Candidate 'wds.resone.launcher.exe'
+    $CandidateFingerprint = Join-Path $Candidate '.source-fingerprint'
+    if ((Test-Path $CandidateExe) -and (Test-Path $CandidateFingerprint)) {
+      $PreviousLauncherFingerprint = (Get-Content $CandidateFingerprint -Raw).Trim()
+      if ($PreviousLauncherFingerprint -eq $LauncherFingerprint) {
+        $LauncherOutputDir = $Candidate
+        $SkipLauncherPublish = $true
+        break
+      }
+    }
+  }
+}
+
+if ($SkipLauncherPublish) {
+  Write-Host "Resone launcher is already running and the current launcher build matches its managed sources; skipping launcher publish ($LauncherOutputDir)." -ForegroundColor Cyan
+}
+else {
+  if ($LauncherTargetLocked) {
+    $LauncherOutputDir = $LauncherNextDir
+    if (Test-Path $LauncherOutputDir) { Remove-Item $LauncherOutputDir -Recurse -Force }
+    Write-Host 'The running launcher is using build\launcher. Publishing the changed launcher to build\launcher-next instead.' -ForegroundColor Yellow
+  }
+  Run dotnet (@('publish',"$Root/src/wds.resone.launcher/wds.resone.launcher.csproj",'-c','Release','-r','win-x64','--self-contained','true','-o',$LauncherOutputDir) + $PublishFlags)
+  Set-Content (Join-Path $LauncherOutputDir '.source-fingerprint') $LauncherFingerprint -Encoding ASCII
+}
+Run dotnet (@('publish',"$Root/src/wds.resone.updater/wds.resone.updater.csproj",'-c','Release','-r','win-x64','--self-contained','true','-o',"$Root/build/updater") + $PublishFlags)
 # Clean shell-decoration leftovers from older builds before CMake/iPlug2 deploys.
 # This also repairs an existing installation once, so no manual deletion is needed.
 $AutoVst3Bundle = Join-Path $env:LOCALAPPDATA 'Programs\Common\VST3\Resone.vst3'
@@ -111,13 +211,24 @@ Remove-LegacyVst3ShellIconArtifacts "$Root/build/ui/out/Resone.vst3"
 if ($DeployInstall) { Remove-LegacyVst3ShellIconArtifacts (Join-Path $InstallDir 'Resone.vst3') }
 Remove-LegacyVst3ShellIconArtifacts $AutoVst3Bundle
 
-Run cmake @('-S',"$Root/src/wds.resone.ui",'-B',"$Root/build/ui",'-G','Visual Studio 17 2022','-A','x64')
-# Source archives are commonly extracted over an existing development tree. The
-# extracted source timestamps can be older than an already-built .obj/.dll, which
-# previously allowed an obsolete resone_llama_bridge.dll to survive a rebuild.
-# Clean the native build first, then build the bridge explicitly before the app.
-Write-Host 'Cleaning native UI build to prevent stale native bridge/object files...'
-Run cmake @('--build',"$Root/build/ui",'--config','Release','--target','resone_llama_bridge','--clean-first','--parallel')
+$BridgeFingerprint = Get-BridgeSourceFingerprint
+$BridgeBuildId = $BridgeFingerprint.Substring(0, 16)
+$BridgeOutputName = "resone_llama_bridge_$BridgeBuildId.dll"
+$BridgeDll = "$Root/build/ui/out/Release/$BridgeOutputName"
+Run cmake @('-S',"$Root/src/wds.resone.ui",'-B',"$Root/build/ui",'-G','Visual Studio 17 2022','-A','x64',"-DRESONE_LLAMA_BRIDGE_BUILD_ID=$BridgeBuildId")
+# The llama bridge is loaded in-process and therefore locked by Windows while the
+# AI stack is running. Build it under a source-hashed immutable filename instead
+# of cleaning/overwriting the loaded DLL. A changed source hash creates a new DLL;
+# an unchanged hash reuses the existing build without touching it.
+if (Test-Path $BridgeDll) {
+  Write-Host "Llama bridge source is unchanged; reusing $BridgeOutputName." -ForegroundColor Cyan
+}
+else {
+  Write-Host "Building immutable llama bridge $BridgeOutputName..."
+  Run cmake @('--build',"$Root/build/ui",'--config','Release','--target','resone_llama_bridge','--parallel')
+}
+if (!(Test-Path $BridgeDll)) { throw "Expected llama bridge was not produced: $BridgeDll" }
+Set-Content "$Root/build/ui/bridge-current.txt" $BridgeOutputName -Encoding ASCII
 Run cmake @('--build',"$Root/build/ui",'--config','Release','--target','Resone-app','Resone-vst3','wds_resone_vocals','--parallel')
 
 $StandaloneBinary = "$Root/build/ui/out/Resone.exe"
@@ -134,12 +245,12 @@ Write-Host 'Verified Resone icon resource in standalone and VST3 binaries.'
 $VocalDll = "$Root/build/ui/out/Release/wds.resone.vocals.dll"
 if (!(Test-Path $VocalDll)) { $VocalDll = "$Root/build/ui/out/wds.resone.vocals.dll" }
 if (!(Test-Path $VocalDll)) { throw 'wds.resone.vocals.dll was not produced by the native build.' }
-Copy-Item $VocalDll "$Root/build/launcher/wds.resone.vocals.dll" -Force
+Copy-Item $VocalDll "$LauncherOutputDir/wds.resone.vocals.dll" -Force
 Copy-Item $VocalDll "$Root/build/api/wds.resone.vocals.dll" -Force
 
 if (!$DeployInstall) {
   Write-Host "Build complete. Live launcher was left running; install directory was not modified." -ForegroundColor Green
-  Write-Host "Build outputs: $Root/build/launcher, $Root/build/api, $Root/build/ui" -ForegroundColor Cyan
+  Write-Host "Build outputs: $LauncherOutputDir, $Root/build/updater, $Root/build/api, $Root/build/ui" -ForegroundColor Cyan
   exit 0
 }
 
@@ -147,10 +258,11 @@ if (!$DeployInstall) {
 # The icon that matters is embedded in the VST3 module and assigned to the native
 # editor window; decorating the bundle folder caused repeat-build AccessDenied errors.
 Copy-Item "$Root/build/api/wds.resone.api.dll" $InstallDir -Force
-Copy-Item "$Root/build/launcher/wds.resone.launcher.exe" $InstallDir -Force
+Copy-Item "$LauncherOutputDir/wds.resone.launcher.exe" $InstallDir -Force
+Copy-Item "$Root/build/updater/wds.resone.updater.exe" $InstallDir -Force
 Copy-Item "$Root/src/wds.resone.ui/resources/Resone.ico" $InstallDir -Force
 Copy-Item "$Root/build/ui/out/Resone.exe" "$InstallDir/wds.resone.ui.exe" -Force
-Copy-Item "$Root/build/ui/out/Release/resone_llama_bridge.dll" $InstallDir -Force
+Copy-Item $BridgeDll "$InstallDir/resone_llama_bridge.dll" -Force
 Copy-Item $VocalDll $InstallDir -Force
 Copy-Item "$Root/third_party/vcpkg/installed/x64-windows/bin/*.dll" $InstallDir -Force
 # FluidSynth uses different DLL basenames across distributions. Keep our ABI loader's name stable.
@@ -159,7 +271,7 @@ if (!$Fluid) { throw 'FluidSynth runtime DLL missing' }
 if ($Fluid.Name -ne 'libfluidsynth-3.dll') { Copy-Item $Fluid.FullName "$InstallDir/libfluidsynth-3.dll" -Force }
 # Copy directory contents explicitly so repeated installs cannot nest assets/assets.
 New-Item -ItemType Directory -Force "$InstallDir/assets" | Out-Null
-Copy-Item "$Root/build/launcher/assets/*" "$InstallDir/assets" -Recurse -Force
+Copy-Item "$LauncherOutputDir/assets/*" "$InstallDir/assets" -Recurse -Force
 if (!$CustomerRelease -and !(Test-Path "$InstallDir/assets/Instructions/Music/music-composition.json")) {
   throw 'Music instructions were not staged into the installation directory'
 }
@@ -173,7 +285,7 @@ if ($Settings.sttUrl -in @('http://127.0.0.1:8100/inference','http://localhost:8
   $Settings.sttUrl = 'http://127.0.0.1:8000/inference'
   $Settings | ConvertTo-Json -Depth 32 | Set-Content $SettingsPath -Encoding UTF8
 }
-# Keep diagnostic logs at the source solution even when the app is installed elsewhere.
+# Legacy LLM log settings point at the same daily-log directory used by the launcher/updater.
 $SourceSettings = Get-Content "$Root/config/appsettings.json" -Raw | ConvertFrom-Json
 # Local inference mode belongs to the source build configuration. Older installers
 # preserved appsettings.json wholesale, which meant changing nativeInference in the
@@ -190,14 +302,7 @@ foreach ($NativeField in @('llamaEngineDirectories','nativeModelPath','contextTo
 }
 $Enabled = $true
 if ($SourceSettings.PSObject.Properties['logLlmRequests']) { $Enabled = [bool]$SourceSettings.logLlmRequests }
-$LogDirectory = "$Root/logs"
-if ($SourceSettings.llmLogDirectory) {
-  if ([System.IO.Path]::IsPathRooted($SourceSettings.llmLogDirectory)) {
-    $LogDirectory = $SourceSettings.llmLogDirectory
-  } else {
-    $LogDirectory = [System.IO.Path]::GetFullPath((Join-Path $Root $SourceSettings.llmLogDirectory))
-  }
-}
+$LogDirectory = Join-Path $env:LOCALAPPDATA 'Wds\Logs\Resone'
 $Settings | Add-Member -NotePropertyName logLlmRequests -NotePropertyValue $Enabled -Force
 $Settings | Add-Member -NotePropertyName llmLogDirectory -NotePropertyValue $LogDirectory -Force
 $Settings | ConvertTo-Json -Depth 32 | Set-Content $SettingsPath -Encoding UTF8
@@ -207,7 +312,7 @@ $SourceRuntime = Get-Content "$Root/config/runtime.json" -Raw | ConvertFrom-Json
 # Provisioning configuration is source-controlled for development. Synchronize
 # engine/model download settings so editing config/runtime.json cannot leave an
 # older AppData installation silently using stale engine-pack URLs.
-foreach ($RuntimeField in @('useExistingStack','backend','requireHashes','enginePacks','models','services')) {
+foreach ($RuntimeField in @('manifestVersion','provisionAiRuntime','useExistingStack','requireHashes','logging','updates','dependencyPins','enginePacks','models','services')) {
   if ($SourceRuntime.PSObject.Properties[$RuntimeField]) {
     $Runtime | Add-Member -NotePropertyName $RuntimeField -NotePropertyValue $SourceRuntime.PSObject.Properties[$RuntimeField].Value -Force
   }

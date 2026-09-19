@@ -20,3 +20,8 @@ must(pass.includes('Anchored Harmonic Divergence is always part of your composit
 must(pass.includes('Continuation property'),'composer continuation rule not reused');
 must(pass.includes('instructions.ArrangementInstructions') && pass.includes('composition-tips.md'),'design pass does not use composer instructions');
 console.log('PASS optional saved global Composer Design Pass: emotional note palette, key/AHD plan, Resonator melody/motifs/chords and 1-3 response variants shared to every lane');
+must(ui.includes('composerOverview :') && ui.includes('workspaceComposerOverview'), 'future song requests must carry the saved composer overview');
+must(ui.includes('workspaceComposerOverview=p.composerDesign'), 'composer overview is not retained after song generation');
+must(forge.includes('existingComposerOverview') && forge.includes('composerOverview'), 'forge does not pass an existing composer overview into later full-song requests');
+const workspace=read('src/wds.resone.api/SongWorkspaceStore.cs');
+must(workspace.includes('public string ComposerDesign') && workspace.includes('["composerDesign"] = meta.ComposerDesign'), 'composer overview is not persisted in saved song metadata');

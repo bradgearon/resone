@@ -38,3 +38,24 @@ assert 'LaneKeyRegion' in contracts and 'KeyRegions' in contracts
 assert 'rememberNotationKey' in app and 'laneKeyRegions' in app and 'laneKeyBadge' in app
 assert 'tonic' in app and "key=" in app
 print('piano-roll interaction regression: ok')
+
+# DAW-style pitch ruler/key visualization and real vertical scaling.
+assert 'id="pitchRuler"' in html and 'id="rollKey"' in html and 'id="zoomY"' in html
+assert 'MAX_VERTICAL_ZOOM = 6' in app and 'g.rowHeight*.82' in app
+assert 'pitchRulerCell' in app and 'pitchRulerCell.tonic' in css
+assert "lane.key) out.push('key=' + lane.key)" in app
+assert "rememberNotationKey(l,t.notation);" in app
+
+# Horizontal zoom is global; vertical zoom remains lane-local.
+assert 'laneZoomXPrefs = {}' not in app and 'laneZoomYPrefs = {}' in app
+assert 'function laneHorizontalZoom()' in app and 'function laneVerticalZoom(' in app
+assert "localStorage.removeItem('resone.pianoRoll.laneZoomX')" in app
+assert "localStorage.setItem('resone.pianoRoll.laneZoomY'" in app
+assert 'zoom=next;' in app and 'laneZoomYPrefs[target.id]=' in app
+assert 'const target=lane();' in app
+assert 'e.ctrlKey||e.metaKey' in app and 'e.altKey' in app
+assert 'const next=Math.max(8,Math.min(220,oldZoom*(e.deltaY<0?1.12:.89)));' in app
+assert 'setHorizontalZoom(next,false); draw();' in app
+assert 'n.duration*xZoom' in app and 'n.start*xZoom' in app
+assert "head.style.left=(editorBeat*laneHorizontalZoom())+'px'" in app
+assert 'Ctrl+wheel all lanes width · Alt+wheel selected lane height' in html

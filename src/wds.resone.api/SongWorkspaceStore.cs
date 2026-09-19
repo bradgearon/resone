@@ -24,6 +24,7 @@ public sealed class SongWorkspaceMeta
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Title { get; set; } = "Untitled Song";
     public string ProducerDesign { get; set; } = "";
+    public string ComposerDesign { get; set; } = "";
     public DateTimeOffset CreatedUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedUtc { get; set; } = DateTimeOffset.UtcNow;
 }
@@ -96,6 +97,7 @@ public sealed class SongWorkspaceStore
                 ["id"] = id,
                 ["title"] = meta.Title,
                 ["producerDesign"] = meta.ProducerDesign,
+                ["composerDesign"] = meta.ComposerDesign,
                 ["project"] = JsonSerializer.SerializeToNode(project, ResoneJson.Default.SongProject),
                 ["history"] = JsonSerializer.SerializeToNode(history, ResoneJson.Default.ListSongWorkspaceHistoryEntry),
                 ["songs"] = new JsonArray(index.Songs.OrderByDescending(x => x.UpdatedUtc).Select(ToSummaryNode).ToArray())
@@ -111,6 +113,7 @@ public sealed class SongWorkspaceStore
         ValidateId(id);
         string title = NormalizeTitle(payload.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "");
         string? producerDesign = payload.TryGetProperty("producerDesign", out var pd) ? pd.GetString() ?? "" : null;
+        string? composerDesign = payload.TryGetProperty("composerDesign", out var cd) ? cd.GetString() ?? "" : null;
         var project = payload.GetProperty("project").Deserialize(ResoneJson.Default.SongProject) ?? throw new ArgumentException("Missing workspace project.");
         List<SongWorkspaceHistoryEntry>? history = null;
         if (payload.TryGetProperty("history", out var h) && h.ValueKind == JsonValueKind.Array)
@@ -148,6 +151,8 @@ public sealed class SongWorkspaceStore
             meta.Title = title;
             if (producerDesign is not null)
                 meta.ProducerDesign = producerDesign.Length > 24000 ? producerDesign[..24000] : producerDesign;
+            if (composerDesign is not null)
+                meta.ComposerDesign = composerDesign.Length > 24000 ? composerDesign[..24000] : composerDesign;
             meta.UpdatedUtc = now;
 
             var writes = new List<Task>

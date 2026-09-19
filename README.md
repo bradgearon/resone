@@ -107,3 +107,11 @@ From the repository root:
 ```
 
 The command renders with the same `native\vocals` DSP sources used by Resone and automatically plays the result through DirectSound. Use `--no-play` to render silently.
+
+## Automatic updates
+
+Resone now includes a launcher-owned application update pipeline. `config/runtime.json -> updates` configures the current version, resone.io manifest URL, retry/backoff behavior, SHA-256 requirements, updater/launcher filenames, preserved paths, and installer-artifact behavior. See `docs/application-updates.md` and `config/update-manifest.example.json`.
+
+`wds.resone.updater.exe` runs from an external temporary copy so the installed launcher and updater can both be replaced. App archives are downloaded, SHA-256 checked, safely extracted, critical files verified, staged with rollback, and the launcher is restarted. Repeated failures are remembered and surfaced through the tray without creating an immediate retry loop.
+
+All process diagnostics now share one daily plain-text log rather than creating JSONL/per-request log files.

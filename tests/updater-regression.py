@@ -31,6 +31,8 @@ for token in ['VerifyShaAsync', 'ExtractVerifiedAsync', 'Rolled back', 'Download
     assert token in updater, token
 assert 'Directory.Move(installRoot, backupRoot)' in updater
 assert 'Directory.Move(stage, installRoot)' in updater
+assert updater.count('static bool TryLaunchLauncher(') == 1, 'top-level local functions cannot overload TryLaunchLauncher'
+assert 'TryLaunchLauncher(installRoot, policy, aiRoot, "--skip-update-once", "--update-failed", null, out Process? fallback, out string relaunchError)' in updater
 
 build = (root/'scripts/build-windows.ps1').read_text()
 assert 'wds.resone.updater.csproj' in build

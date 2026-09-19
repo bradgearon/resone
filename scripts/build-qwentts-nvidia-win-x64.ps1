@@ -4,9 +4,13 @@ param(
     [string]$CudaArchitectures = ""
 )
 $ErrorActionPreference = 'Stop'
-$Commit = 'a8a7716b530e49fed537c57711247c12fbbb903c'
 $Root = Split-Path $PSScriptRoot -Parent
-if ([string]::IsNullOrWhiteSpace($Source)) { $Source = Join-Path $Root 'work/qwentts.cpp-a8a7716' }
+$RuntimeManifest = Get-Content (Join-Path $Root 'config/runtime.json') -Raw | ConvertFrom-Json
+$Pin = $RuntimeManifest.dependencyPins.'qwentts.cpp'
+if (-not $Pin -or [string]::IsNullOrWhiteSpace($Pin.gitRef) -or [string]::IsNullOrWhiteSpace($Pin.repository)) { throw 'config/runtime.json must define dependencyPins.qwentts.cpp.repository and gitRef.' }
+$Commit = [string]$Pin.gitRef
+$Repository = [string]$Pin.repository
+if ([string]::IsNullOrWhiteSpace($Source)) { $Source = Join-Path $Root 'work/qwentts.cpp-pinned' }
 if ([string]::IsNullOrWhiteSpace($Output)) { $Output = Join-Path $Root 'engines/tts/qwenttscpp-nvidia-win-x64' }
 $Build = Join-Path $Source 'build-resone-win-x64'
 $Stage = "$Output.stage-$([Guid]::NewGuid().ToString('N'))"
@@ -18,7 +22,7 @@ function Run([string]$Exe, [string[]]$Args) {
 
 if (-not (Test-Path (Join-Path $Source '.git'))) {
     New-Item -ItemType Directory -Force (Split-Path $Source -Parent) | Out-Null
-    Run git @('clone','--recursive','https://github.com/ServeurpersoCom/qwentts.cpp.git',$Source)
+    Run git @('clone','--recursive',$Repository,$Source)
 }
 
 Run git @('-C',$Source,'fetch','origin',$Commit)

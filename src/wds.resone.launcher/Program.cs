@@ -7,6 +7,7 @@ using Wds.Resone.Launcher;
 
 if(args.Contains("--worker")){await WorkerHost.RunAsync([]);return;}
 string root=ResoneRoot.Resolve();
+string aiRoot=AiRuntimeLocation.Configure(args);
 string user=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Wds","Resone","user");Directory.CreateDirectory(user);
 FileStream owner;
 try{owner=new FileStream(Path.Combine(user,"launcher.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);}
@@ -21,12 +22,14 @@ catch(IOException){
 using(owner)
 using(var shutdown=new CancellationTokenSource())
 using(var http=new HttpClient{Timeout=Timeout.InfiniteTimeSpan})
-using(var controller=new BackgroundController(root,http,shutdown,args.Contains("--no-services")))
+using(var controller=new BackgroundController(root,aiRoot,http,shutdown,args.Contains("--no-services")))
 using(var tray=new TrayIcon(()=>controller.OpenUi(),()=>controller.ToggleAsync(),()=>shutdown.Cancel()))
 {
  Console.CancelKeyPress+=(_,e)=>{e.Cancel=true;shutdown.Cancel();};
  tray.Start();
  controller.StatusChanged+=tray.Status;
+ var updateService=new AppUpdateService(root,http,tray);
+ if(await updateService.TryStartUpdateAsync(args,aiRoot,shutdown.Token)){shutdown.Cancel();return;}
  var listener=ListenAsync();
  if(!args.Contains("--no-ui"))controller.OpenUi();
  try{await controller.EnsureAsync(shutdown.Token);}catch(Exception e){Console.Error.WriteLine("AI setup: "+e.Message);tray.Status("AI setup failed: "+e.Message);}

@@ -332,6 +332,7 @@ static bool TryLaunchLauncher(string installRoot, UpdatePolicy policy, string? a
     }
     catch (Exception e) { error = e.Message; return false; }
 }
+
 static async Task VerifyShaAsync(string path, string expected, bool required, CancellationToken token)
 {
     if (string.IsNullOrWhiteSpace(expected)) { if (required) throw new InvalidDataException("SHA256 is required."); return; }

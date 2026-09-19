@@ -52,16 +52,16 @@ assert(!build.includes('ggml-org/llama.cpp.git'), 'Windows build must not clone 
 assert(!build.includes('LLAMA_CPP_DIR'), 'Windows build must not require a llama.cpp source tree');
 assert(build.includes('resone_llama_bridge'), 'build does not compile/stage the llama bridge');
 assert(build.includes("'llamaEngineDirectories','nativeModelPath','contextTokens','gpuLayers','allowCpuFallback','flashAttention','reasoningEnabled','warmModelOnStackStart','temperature','topK','topP'"), 'installer does not synchronize llama inference parameters');
-assert(build.includes("'useExistingStack','backend','requireHashes','enginePacks','models'"), 'installer does not synchronize runtime provisioning fields');
+assert(build.includes("'manifestVersion','provisionAiRuntime','useExistingStack','requireHashes','logging','updates','dependencyPins','enginePacks','models','services'"), 'installer does not synchronize runtime/update provisioning fields');
 
 const releaseRuntime = JSON.parse(fs.readFileSync('config/runtime.release.example.json','utf8'));
-const llamaPack = releaseRuntime.enginePacks.find(p => p.rid === 'win-x64' && p.directory === 'engines/llm/llama-cpp-dynamic-win-x64');
-assert(llamaPack && llamaPack.backend === 'dynamic', 'release runtime must provision the prebuilt dynamic llama engine folder');
+const llamaPack = releaseRuntime.enginePacks.find(p => p.rid === 'win-x64' && p.component === 'llm' && p.platform === 'nvidia');
+assert(llamaPack && llamaPack.id && llamaPack.version, 'release runtime must define a versioned Windows llama engine pack');
 assert(llamaPack.requiredFiles.includes('llama.dll') && llamaPack.requiredFiles.includes('ggml.dll'), 'llama engine pack required-file checks missing');
 
 const installer = fs.readFileSync('src/wds.resone.launcher/EnginePackInstaller.cs','utf8');
-assert(installer.includes('Downloading "+pack.Rid+" "+pack.Backend+" engine pack'), 'launcher engine-pack downloader missing');
+assert(installer.includes('Preparing {pack.Component} engine ({pack.EffectivePlatform})'), 'launcher engine-pack downloader missing');
 assert(installer.includes('ValidateRequiredFiles'), 'launcher does not validate extracted engine pack contents');
-assert(installer.includes('p.Backend=="dynamic"'), 'dynamic engine pack selection missing');
+assert(installer.includes('PlatformEquals(p, "dynamic")'), 'dynamic engine pack selection missing');
 
-console.log('PASS in-process llama.cpp selection, prebuilt engine-pack provisioning, warm model, streaming bridge, and platform mapping');
+console.log('PASS in-process llama.cpp selection, shared AI_ROOT provisioning, warm model, streaming bridge, and platform mapping');

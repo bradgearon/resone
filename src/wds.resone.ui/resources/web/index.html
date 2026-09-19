@@ -3,7 +3,7 @@
 <body>
 <header>
   <div class="brand"><img src="logo.png" alt=""><span>resone</span><small>COMPOSITION STUDIO</small></div>
-  <label class="instrument">Instrument<select id="instrument"><option>Loading GeneralUser GS…</option></select></label>
+  <label class="instrument" id="soundSourceField"><span id="soundSourceLabel">Instrument</span><select id="instrument"><option>Loading GeneralUser GS…</option></select></label>
   <label>Tempo<input id="tempo" value="120" inputmode="numeric" aria-label="Tempo BPM"></label>
   <label>Meter<input id="meter" value="4/4" aria-label="Time signature"></label>
   <label>Bars<input id="bars" value="16" inputmode="numeric" aria-label="Target bars"></label>
@@ -24,19 +24,17 @@
     <div id="vocalPanel" class="vocalPanel" hidden>
       <div class="vocalFields">
         <label>Lyrics<textarea id="vocalLyrics" placeholder="Type the lyrics this vocal melody should sing…"></textarea></label>
-        <label class="voiceField">Voice<select id="vocalVoice"><option value="">Create a voice…</option></select></label>
-        <button id="newVoice" type="button" title="Create or import a reusable voice">＋ New voice</button>
         <button id="renderVocals" class="primary" type="button">♬ Render singing</button>
       </div>
-      <div class="hint">The vocal MIDI supplies melody/rhythm. The selected saved Qwen reference voice supplies identity; Resone then shapes the speech into singing.</div>
+      <div class="hint">Choose Oohs or a saved voice from the Voice selector above. Saved voices can render these lyrics against the vocal MIDI melody.</div>
     </div>
-    <div class="composerActions"><button id="clear" class="primary newSong">＋ New Song</button><button id="saveNew">⇥ Save & New</button><button id="voice">● &nbsp; Speak your idea</button><button id="cancel" class="danger" hidden>Cancel</button><label class="check songModeCheck"><input id="songMode" type="checkbox"> Song mode</label><label class="check"><input id="ahd" type="checkbox" checked> Anchored harmonic divergence</label></div>
+    <div class="composerActions"><button id="clear" class="primary newSong">＋ New Song</button><button id="saveNew">⇥ Save & New</button><button id="voice">● &nbsp; Speak your idea</button><button id="cancel" class="danger" hidden>Cancel</button><label class="check songModeCheck"><input id="songMode" type="checkbox"> Song mode</label><label class="check"><input id="composerDesignPass" type="checkbox" checked> Composer design pass</label><label class="check"><input id="ahd" type="checkbox" checked> Anchored harmonic divergence</label></div>
     <div class="suggestions"><button>More energy</button><button>Add variation</button><button>Make it dreamier</button><button>Build to a drop</button><button>Simplify</button></div>
     <p id="status" role="status">Select a lane and describe the music you want to hear.</p>
   </section>
   <aside class="panel outputs"><h2>⇩ &nbsp; MIDI outputs</h2><div id="outputs"></div><button id="dragFullMidi" class="fullMidiDrag" title="Drag the complete multitrack MIDI arrangement into your DAW or a folder">⠿ &nbsp; Drag Full Multitrack MIDI</button><button id="export" class="primary wide">⇩ &nbsp; Export Multitrack MIDI…</button></aside>
 </section>
-<section class="panel roll"><div class="rollToolbar"><div><span class="tab">▦ &nbsp; Piano roll</span><button id="addLane">＋ Add lane</button><span class="hint">Double-click to add · drag to move · drag edge to resize · right-click to delete</span></div><div><button id="zoomOut">−</button><input id="zoom" type="range" min="12" max="100" value="28" aria-label="Zoom"><button id="zoomIn">＋</button><button id="fit">Fit</button></div></div><div class="rollContent"><div id="lanes"></div><div class="timeline" id="timeline"><svg id="piano" xmlns="http://www.w3.org/2000/svg" aria-label="Editable piano roll"></svg><div id="playhead"></div></div></div></section>
+<section class="panel roll"><div class="rollToolbar"><div><span class="tab">▦ &nbsp; Piano roll</span><span id="rollKey" class="rollKey">Key —</span><button id="addLane">＋ Add lane</button><span class="hint">Click timeline to seek · double-click to add · Delete removes selected · Ctrl+wheel all lanes width · Alt+wheel selected lane height</span></div><div class="zoomControls"><span class="zoomAxis">X</span><button id="zoomOut" title="Zoom out horizontally">−</button><input id="zoom" type="range" min="8" max="220" value="28" aria-label="Horizontal zoom"><button id="zoomIn" title="Zoom in horizontally">＋</button><span class="zoomAxis">Y</span><button id="zoomYOut" title="Zoom out vertically">−</button><input id="zoomY" type="range" min="0.55" max="6" step="0.05" value="1" aria-label="Vertical zoom"><button id="zoomYIn" title="Zoom in vertically">＋</button><button id="fit">Fit</button></div></div><div class="rollContent" id="rollContent"><div id="lanes"></div><div id="pitchRuler" aria-label="Pitch names"></div><div class="timeline" id="timeline"><svg id="piano" xmlns="http://www.w3.org/2000/svg" aria-label="Editable piano roll"></svg><div id="playhead"></div></div></div></section>
 </main>
 <footer><span id="selectedLabel">MELODY</span><span>GENERALUSER GS <b>•</b> LOCAL SYNTHESIS</span><span id="duration">0:00</span></footer>
 

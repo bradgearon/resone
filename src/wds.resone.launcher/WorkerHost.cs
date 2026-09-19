@@ -10,7 +10,7 @@ namespace Wds.Resone.Launcher;
 internal static class WorkerHost { public static async Task RunAsync(string[] args) {
 string root = ResoneRoot.Resolve();
 using var startupTrace = new StartupTrace(root);
-startupTrace.Write("worker-start", $"process={Environment.ProcessPath}; cwd={Environment.CurrentDirectory}; root={root}");
+startupTrace.Write("worker-start", $"process={Environment.ProcessPath}; cwd={Environment.CurrentDirectory}; root={root}; aiRoot={Wds.Resone.Api.AiRuntimeRoot.Resolve()}");
 string config = Path.Combine(root, "config", "appsettings.json");
 startupTrace.Write("config", $"path={config}; exists={File.Exists(config)}");
 ResoneSettings settings;
@@ -74,7 +74,7 @@ using var http = new HttpClient
 };
 var licensing = new LicenseService(root,http);
 var workspaceStore = new SongWorkspaceStore();
-await using var ttsManager = new Wds.Resone.Api.VocalSinging.QwenTtsServiceManager(settings, root, http);
+await using var ttsManager = new Wds.Resone.Api.VocalSinging.QwenTtsServiceManager(settings, Wds.Resone.Api.AiRuntimeRoot.Resolve(), http);
 await using var speechService = new SpeechService(http, settings, ttsManager);
 var voiceService = new Lazy<Wds.Resone.Api.VocalSinging.VoiceService>(() => new Wds.Resone.Api.VocalSinging.VoiceService(http, settings, speechService, ttsManager));
 var builder = WebApplication.CreateSlimBuilder(args.Where(a => !a.StartsWith("--no-")).ToArray());

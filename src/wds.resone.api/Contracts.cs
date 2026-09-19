@@ -5,6 +5,7 @@ using Wds.Resone.Api.VocalSinging;
 
 namespace Wds.Resone.Api;
 public sealed record Note(double Start, double Duration, int Pitch, int Velocity = 96);
+public sealed record LaneKeyRegion(double Start, double End, string Key);
 public sealed class Lane
 {
     public string Id { get; set; } = "melody";
@@ -23,6 +24,8 @@ public sealed class Lane
     public string RenderedVocalPath { get; set; } = "";
     public string RenderedVocalSignature { get; set; } = "";
     public List<VocalGuidanceEvent> VocalGuidance { get; set; } = [];
+    public string Key { get; set; } = "";
+    public List<LaneKeyRegion> KeyRegions { get; set; } = [];
     public string Notation { get; set; } = "";
     public string OriginalBrief { get; set; } = "";
     /// <summary>Exact imported/generated clip span in quarter-note beats. Zero means derive it from Notes.</summary>
@@ -143,6 +146,8 @@ public sealed record Envelope(string Op, string RequestId, JsonElement Payload);
 [JsonSerializable(typeof(SongProject))]
 [JsonSerializable(typeof(Lane))]
 [JsonSerializable(typeof(List<Note>))]
+[JsonSerializable(typeof(LaneKeyRegion))]
+[JsonSerializable(typeof(List<LaneKeyRegion>))]
 [JsonSerializable(typeof(MusicCompositionRequest))]
 [JsonSerializable(typeof(MusicCompositionInstructions))]
 [JsonSerializable(typeof(SongGenerationState))]
