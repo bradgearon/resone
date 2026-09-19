@@ -25,3 +25,10 @@ Executed in the Linux workspace:
 Not executed here: MSVC/iPlug2 APP and VST3 binaries, WebView2 rendering, physical microphone capture, live GGUF inference, DAW restore/transport/device tests. The browser test could not launch Chromium because this environment rejects its Unix socket creation. The included Windows workflow and Playwright editor test have not been represented as passing.
 
 Tests use deterministic upstream responses to isolate the real NativeAOT bridge, host, cancellation, parser and serializer behavior. They do not assess model composition quality. C++ audio tests use the actual included SoundFont and a real FluidSynth shared library.
+
+## Vocal word-span regression (2026-09-18)
+
+- `tests/vocal-word-span-regression.py` verifies the renderer is word-span based, uses a monotonic non-wrapping sustain cursor, prepares articulated one-word source speech, allows reference transcript correction, and uses the lower male F0 floor.
+- Native Linux smoke build: `g++ -std=c++20 -fPIC -shared native/vocals/resone_vocals.cpp -Inative/vocals ...` succeeds.
+- Functional synthetic-audio regression used four distinct source word islands across eight melody notes and verified source-word identity progresses once in order rather than cycling earlier material.
+- Full available Node and Python source regression suites pass. Windows/.NET/MSVC/CUDA execution still requires the Windows build environment.

@@ -12,10 +12,11 @@ struct Note {
 };
 struct Lane {
     std::string id, name;
+    std::string renderedVocalPath;
     int bank{}, program{};
     double volume{.8};
     double clipLengthBeats{};
-    bool muted{}, solo{}, drums{};
+    bool muted{}, solo{}, drums{}, vocals{};
     std::vector<Note> notes;
 };
 struct Song {
@@ -41,8 +42,11 @@ inline Song parseSong(const Json &j) {
         l.muted = v.value("muted", false);
         l.solo = v.value("solo", false);
         l.drums = v.value("drums", false);
+        l.vocals = v.value("vocals", false);
+        l.renderedVocalPath = v.value("renderedVocalPath", std::string{});
         if (l.program < 0 || l.program > 127 || l.bank < 0 || l.bank > 128 || !std::isfinite(l.volume) ||
-            l.volume < 0 || l.volume > 1 || !std::isfinite(l.clipLengthBeats) || l.clipLengthBeats < 0 || l.clipLengthBeats > 4096)
+            l.volume < 0 || l.volume > 1 || !std::isfinite(l.clipLengthBeats) || l.clipLengthBeats < 0 || l.clipLengthBeats > 4096 ||
+            (l.drums && l.vocals) || l.renderedVocalPath.size() > 4096)
             throw std::runtime_error("Invalid instrument or volume");
         if (v.at("notes").size() > 8192)
             throw std::runtime_error("Too many notes");

@@ -1,66 +1,147 @@
-# Resone licensing and background-host update
 
-This is a developer source update, not a prebuilt customer installer. The source baseline was recovered from the Resone starter project and the saved patches through `resone-saved-lane-notation.zip`; it is not a copy of your live U:\Resone checkout. Compare the focused diff before replacing files if you have made additional code changes there.
+## Singing word-span rendering
 
-All five instruction files you supplied on this turn are copied byte-for-byte to `assets/Instructions/Music`. No musical wording has been rewritten. Your newly uploaded logo is used for the web logo and Windows application/tray icon resources.
+- Fixed the vocal renderer repeating whole lyric words rapidly when a word covered multiple MIDI notes. The old renderer selected/reused a speech region per note and wrapped its PSOLA source cursor.
+- Singing is now **word-span based**: Qwen articulates every lyric word once; Resone assigns each word a proportional contiguous melody span; consonant attack/release material occurs once; vowel material carries the extra duration and follows every MIDI pitch inside the span.
+- The TD-PSOLA sustain cursor is monotonic and never wraps to the beginning of the word. This removes the `word word word` machine-gun effect while preserving rhythmic note changes.
+- Male/reference voices use a 50 Hz analysis floor and octave-normalize local F0 estimates against the whole voice sample before pitch correction.
+- Imported/generated voice transcription is editable before Save and the corrected value becomes Qwen `ref_text`.
+# Release update — managed Qwen TTS services
 
-## Included
+Qwen TTS no longer requires an in-process `qwen.dll`. Resone now owns the qwentts.cpp server lifecycle through `QwenTtsServiceManager` and launches `qwen-server.exe` (with `tts-server.exe` fallback) from the configured engine pack.
 
-- `cloud/licensing`: Cloudflare Worker, D1 migration, signed device challenges and leases, verified-purchase issuance endpoint/script, activation, renewal, release, revocation, and device reset. See its README for deployment and storefront integration.
-- One launcher per user, shared by VST instances and the standalone app. Opening the editor asynchronously starts it; DAW scans do not start the launcher. Named pipes are used only for authenticated per-user bootstrap/readiness. Requests/results use WebSockets; no health polling.
-- Launcher tray: Open Resone, Toggle AI stack, Exit Resone services. Closing the standalone editor leaves the launcher alive.
-- Composition host runs in a separate child process. The launcher restarts it after an unexpected exit, with a three-restart limit. Clients reconnect after disconnects and discard interrupted requests rather than replaying compositions or activations. `--no-ui` and `--no-services` are retained.
-- Downloadable engine packs selected by OS/architecture/backend, with CPU fallback per engine directory. HTTPS plus mandatory pack SHA256, archive traversal/symlink checks, extraction limits, staging and replacement rollback. Archive work directories are deleted after installation. Model downloads resume interrupted transfers, verify configured hashes, and replace corrupted models.
-- Native llama.cpp adapter and C# client: model stays loaded, requests are serialized on a background thread, model chat template/Jinja is applied with thinking disabled, output is delivered through callbacks, cancellation is supported during evaluation. Native crashes stay outside the DAW. CPU operation is supported; GPU use requires a compatible GPU pack. Native mode no longer sends private prompts over HTTP.
-- Release-only encrypted embedded instruction bundle, pinned public license-verification key, and prompt-file logging disabled at compile time. Developer builds retain editable Markdown/JSON and configurable logging. Embedded encryption deters casual extraction; it cannot make local prompts secret from a determined machine owner.
-- Licensing controls in Settings. CNG device key and DPAPI license cache for Windows. Existing music remains editable/playable/exportable without contacting the license server; generation/transcription/TTS require activation in customer builds.
-- Native MIDI drag button on each lane output. It stages a real `.mid` from current edited notes locally and uses Windows OLE file drag. File contents include tempo, meter, instrument program, exact note velocities/timing and percussion channel 10. Drag files remain in `%LOCALAPPDATA%\Wds\Resone\user\midi-drags` so deferred DAW imports can read them; delete them when no longer needed.
+- Opening **New voice** starts and pins the VoiceDesign server immediately.
+- Closing the window releases it; idle shutdown uses `serviceDelays.voice-design`.
+- Selecting or rendering a saved voice warms the logical `custom-voice` service; idle shutdown uses `serviceDelays.custom-voice`.
+- Active generation is protected from idle termination, and repeated activity refreshes the deadline.
+- Only one Qwen GPU service remains resident at a time; switching modes stops the inactive server before loading the next model.
+- Saved voices now persist WAV + Whisper transcript instead of DLL-generated latent files. The managed Base server registers each saved voice through `/v1/audio/voices` (`wav_b64` + `ref_text`) once per process lifetime and then synthesizes through `/v1/audio/speech`.
+- VoiceDesign generation also uses `/v1/audio/speech` with the design instruction.
+- Generic `SpeechService.SpeakAsync()` was moved off the deleted Qwen DLL runtime as well.
+- The Windows Qwen staging script now builds the pinned `tts-server` target at `a8a7716b530e49fed537c57711247c12fbbb903c`, copies it as `qwen-server.exe`, and atomically stages its matching GGML/CUDA DLLs.
+- Runtime manifests now require `qwen-server.exe`, not `qwen.dll`.
+- VoiceDesign requests use the pinned server's OpenAI-compatible `instructions` field (not the CLI-only/internal `instruct` name).
 
-The existing greedy PCM playback renderer is retained. The recovered selected-lane composer validates a complete generated lane before committing/autoplaying it; this update does not add incremental notation-to-piano-roll playback during token generation. The native inference callbacks provide streamed text, but that is distinct from streaming playable MIDI. Test musical/model behavior before replacing your working engine configuration.
+Default configuration:
 
-## Build a developer version
-
-Run `scripts/build-windows.ps1` on Windows with .NET 9 NativeAOT prerequisites, Visual Studio C++ tools, CMake, Git and Node available. This source build now selects the in-process local inference adapter by default (`nativeInference:true` / `useLocalInference:true`). The HTTP `llmUrl` path remains available only when local inference is explicitly disabled. Launcher auto-start and MIDI drag still apply. All native and managed components must be rebuilt together because the bridge now exports `resone_set_home`.
-
-Local inference uses llama.cpp directly in the launcher worker. `resone_llama_bridge.dll` is a thin app-owned ABI shim; it dynamically loads the downloaded engine pack selected by `llamaEngineDirectories` (Windows x64 defaults to `engines/llm/llama-cpp-dynamic-win-x64`). Configure `nativeModelPath`, `contextTokens`, `gpuLayers`, `flashAttention` and `allowCpuFallback`. The model is warmed when the AI stack starts and remains resident until the stack stops. A CPU-only test uses `gpuLayers:0`. Restart the stack after changing engine/model/inference settings. The bridge compiles against the vendored ABI snapshot in `native/inference/llama_dynamic_abi.hpp`; the build never clones or builds llama.cpp. The runtime engine pack must expose that compatible ABI.
-
-The CPU pack script disables AVX/AVX2/FMA/F16C for a broad baseline. Optimized CPU builds and GPU pack dependencies should be tested on their actual target machines. The native core is portable, but the current iPlug2 WebView editor, tray and protected device-key integration are Windows implementations. macOS/Linux desktop releases still need their platform UI/tray/keystore/drag implementations; their names in the manifest are not a claim that those applications are complete.
-
-## Prepare a customer release
-
-1. Deploy the licensing worker using `cloud/licensing/README.md`. Test purchase issuance and activation before compiling your customer build.
-2. Copy `config/runtime.release.example.json` to your private production manifest. Fill real engine/model download URLs and SHA256 values. Supply at least Windows x64 CPU LLM and ASR packs. The LLM runtime must provide a compatible dynamic llama.cpp engine folder for the target RID (for Windows x64: `llama.dll`, GGML runtime/backends, etc. under the configured `engines/llm/llama-cpp-dynamic-win-x64` directory); `resone_llama_bridge.dll` is built/staged with Resone itself. The ASR archive root must contain the configured executable (example `whisper-server.exe`). TTS is optional and needs its own pack, models and service entry when enabled. The example intentionally contains no invented URLs/hashes.
-3. If using CUDA, add a CUDA LLM pack for the same `engines/llm` directory. With backend `auto`, the launcher checks for the driver library and prefers that pack; missing GPU-specific packs for other engines fall back to CPU. Driver-library presence is a heuristic; validate actual runtime compatibility. A model/context allocation failure can fall back to CPU within the loaded native runtime. A DLL that cannot load due to missing GPU dependencies still requires a corrected pack or choosing CPU.
-4. Run, with your actual values and a fresh staging directory:
-
-```powershell
-./scripts/build-windows.ps1 `
-  -CustomerRelease `
-  -InstallDir 'U:\Resone\dist\Resone-customer' `
-  -LicensePublicKeyFile 'U:\private\signing-public.jwk' `
-  -LicenseApiUrl 'https://YOUR-DEPLOYED-WORKER' `
-  -RuntimeManifest 'U:\private\runtime.production.json'
+```json
+"serviceDelays": {
+  "voice-design": 3000,
+  "custom-voice": 3000
+}
 ```
+## 2026-09-18 — pitch-synchronous singing correction
 
-The build requires the public key and valid download configuration, publishes NativeAOT components, omits loose instruction files, disables prompt logs, and stages the icon/UI/VST. It refuses a nonempty customer staging directory to avoid shipping old logs or instructions. Ship the contents of the customer staging directory, not this source archive or `cloud/licensing/.secrets`.
-
-The canonical installed location for discovery from a copied VST is `%LOCALAPPDATA%\Wds\Resone`; alternatively set `RESONE_HOME` to the installation folder. The customer app itself can open from its install directory, and an installer can set that path/distribute a launcher shortcut. This package does not include a signed MSI, automatic DAW VST folder installation, a storefront webhook, or deployed cloud resources.
-
-## Verification and remaining release tests
-
-Completed here: Worker behavior tests, actual local Workers/D1 concurrent-activation test, Wrangler deployment dry run, editor generation/notation regression tests, encrypted-bundle round trip, C# compilation including the customer configuration, Linux native inference compilation/ABI/error smoke test, and portable MIDI export checks. See `VALIDATION.md` for the final NativeAOT outcome.
-
-Before shipping: run the Windows NativeAOT/iPlug2 build, open the standalone and multiple DAW instances, confirm one tray host, test microphone and drag/drop in your DAWs, activate/renew/release with the real Worker, test GPU/CPU packs on clean machines, and generate with your actual GGUF. The required model and Windows DAW environment were not available for those tests here. No customer keys were generated or deployed.
-
-The local worker accepts only the bootstrap session token and rejects browser Origin headers. A custom external API URL can still target a compatible separately managed host; the managed Resone worker itself is loopback-only. Existing independently running Six Stars services are never stopped when `useExistingStack` is enabled.
-
-2026-09-17 Windows llama bridge compile fix:
-- Guard NOMINMAX because the project already defines it on the compiler command line.
-- Renamed the token decode buffer from small to piece_buffer; Windows headers define small, which made MSVC parse char small[256] as char char[256].
+- Reworked vowel pitch processing so source grains follow measured local F0/pitch periods rather than arbitrary positions inside the vowel.
+- The renderer now removes spoken F0 drift as part of pitch-synchronous resynthesis and spaces destination grains from the exact MIDI target contour.
+- Large source pitch octave errors are still normalized against the voice reference before resynthesis.
+- `formantPreserve` now participates in the synthesis path instead of being effectively unused. Upward transpositions receive a small register-aware timbre compensation after pitch placement so low male references do not become excessively boomy at higher melody notes.
+- Added a 35 Hz sub-rumble high-pass after overlap/add. This remains below the supported vocal pitch range and is not intended as audible bass EQ.
+- Consonant onset/coda handling and the one-word-per-melody-span behavior from the previous singing update are retained.
+- Native synthetic validation used a spoken source gliding roughly 105–135 Hz and verified rendered targets at about 262.3 Hz (C4) and 328.8 Hz (E4).
 
 
-## 2026-09-17 native startup diagnostics / DLL search
-- Development runs prefer FluidSynth from the vcpkg bin directory so its transitive DLLs are co-located.
-- Dynamic native loading explicitly searches the target DLL directory plus configured dependency directories.
-- FluidSynth startup writes `logs/native-audio.log` with the resolved runtime root, DLL path, and loader error.
-- The worker now creates an always-on `logs/startup-*.log` before local llama.cpp initialization and records engine/bridge/model resolution, GPU attempt, CPU fallback, and the exact native error if startup fails. No prompts or model output are written to this startup log.
+
+## Legacy Qwen settings compatibility
+
+- Restored `QwenTtsExpectedVersionPrefix` and `QwenTtsLibraryName` on `ResoneSettings` as compatibility-only properties so older merged source files compile.
+- The active TTS implementation still uses `QwenTtsServiceManager` + `qwen-server.exe`; these two DLL-era values are not used at runtime.
+- Fixed `build-windows.ps1` to propagate the current server settings (`qwenTtsServerName`, `qwenTtsStartupTimeoutSeconds`, and `serviceDelays`) instead of stale DLL-loader fields.
+
+
+## 2026-09-18 - Phrase-continuous vocal rendering
+- Qwen generates one fluent lyric phrase instead of isolated per-word speech.
+- Internal words no longer fade to silence.
+- Consonants can anticipate the beat and overlap the preceding vowel.
+- Added short automatic legato portamento and delayed sustain-dependent vibrato.
+- Smoothed note-to-note dynamics while preserving real rests/breaths.
+
+## 2026-09-18 — Consonant continuity / de-click pass
+
+Analyzed the supplied singing-preview recording and found narrow transient spikes plus short energy collapses at several internal word joins. The phrase-continuity renderer was still independently trimming word edges and the anticipated onset ended abruptly where the pitch-synchronous vowel began.
+
+Changes:
+- internal fluent-phrase word regions now preserve their exact shared boundaries instead of running per-word energy trimming;
+- low-energy consonants such as s/f/th and plosive releases are therefore not discarded as silence;
+- anticipated consonants get both attack and release tapers;
+- the pitched vowel fades in under the consonant tail over the same join window;
+- the prior sustained vowel is not ducked while the next consonant approaches, preventing audible level holes;
+- maximum anticipated consonant duration is slightly reduced so consonant clusters do not appear to jump far ahead of the beat;
+- coda limits were tightened slightly while preserving phrase-final releases.
+
+
+## Voice register analysis and octave folding
+
+- Generated and imported voice references are analyzed once for median/base F0, base MIDI note/octave, voiced pitch spread, and a conservative two-octave singing register.
+- The default singing register is C through B of the detected base octave plus the octave above it (for example, base octave 2 => C2-B3).
+- Vocal melody notes outside the stored register are moved only by whole octaves before pitch correction, preserving pitch class while avoiding extreme voice shifts.
+- Existing saved voices without profile metadata are analyzed lazily on first vocal render and the profile is persisted.
+- The voice designer reports the detected base note/octave and singing range after generation/import.
+
+## 2026-09-18 — consonant-preserving vocal regions, practical register, DirectSound CLI
+
+- Replaced the single-vowel-nucleus word renderer with ordered voiced/consonant speech pieces.
+- Consonants such as h/p/b/d/t/k/s/f are preserved once at near-natural timing and are never pitch-shifted; voiced regions absorb sustained musical duration.
+- Added 2.5 ms internal equal-power joins and removed the old anticipated-onset path that could cause jumps/skips.
+- Tightened fluent-phrase word-boundary search so internal plosive closures are less likely to be mistaken for word boundaries.
+- Voice register analysis now anchors on the lower stable voiced quintile instead of median speech F0. Pitch profile v2 forces older saved profiles to be reanalyzed.
+- `resone-voice` now plays the rendered WAV automatically via NAudio `DirectSoundOut`; pass `--no-play` for silent runs.
+
+## Phoneme-aware singing pass
+- Added `native/vocals/resone_vocal_phonetics.*` so lyric text is planned as vowel nuclei plus consonant behavior runs instead of treating an entire word as one pitch-bearing unit.
+- Text vowel nuclei now guide acoustic voiced-island splitting/merging. Multi-syllable words such as `happy` and `birthday` retain multiple vowel nuclei even when the pitch detector stays voiced through an internal sonorant.
+- Consonants are split into two musical classes:
+  - **Transient:** stops/affricates such as p/b/t/d/k/g/ch stay near their natural closure/release duration and are never used to fill a long note.
+  - **Sustainable:** fricatives, breath, nasals, and liquids such as s/f/sh/th/h/m/n/l/r/v/z may take a controlled share of extra musical duration. Voiced sustainables may follow the note pitch; noisy sustainables are granular-stretched without spectral down-pitching.
+- Mixed clusters are split by behavior. For example, `st` can sustain the `s` while preserving the `t` transient.
+- Pitch slides now interpolate smoothly in log-frequency/cents space instead of linearly in Hz.
+- Added a mild phrase-level dynamics contour so connected words read more like one performed line.
+- Both the main UI target and the isolated `resone-voice` native target compile the same new phonetics module.
+
+## 2026-09-18 vocal smoothing + register re-profile
+
+- Bumped saved voice pitch profiles to version 3. Version-2 profiles are automatically reanalyzed.
+- Selecting an old saved voice now reanalyzes its register immediately.
+- Added `resone-voice ... --reprofile` to force register analysis from the CLI.
+- Practical register analysis now moves speaking anchors at C4 or above down one octave before building the two-octave singing window (for example D4 speech -> D3 practical anchor, C3-B4 window).
+- Final silent `e` no longer invents an extra vowel nucleus in the text-guided singing planner.
+- Mixed consonant clusters are preserved as one natural acoustic gesture unless real phoneme timestamps are available.
+- Replaced equal-power adjacent-phoneme joins with raised-cosine constant-sum crossfades to remove short gain pulses.
+- Word-boundary de-clicking now applies a decaying offset correction instead of extrapolating the previous waveform into the new consonant.
+- Sustainable/vowel joins use a smoother 4 ms overlap while hard transient consonants keep a shorter 1.5 ms join.
+
+## 2026-09-18 — single-consumption sung consonants + song-title repair
+
+### Vocal articulation
+
+- Split consonant rendering into a dedicated `resone_vocal_articulation.cpp/.h` module so phonetic planning, articulation/time-stretch, and pitch-synchronous vowel rendering are no longer mixed together in one large implementation.
+- Removed the modulo/grain-loop stretcher that could audibly repeat sustainable consonants such as `s`, `f`, `sh`, `th`, or `h`.
+- Unvoiced sustainable consonants now use a monotonic overlap-add time stretch. Their attack and release are consumed once; only the continuous interior noise is expanded.
+- Voiced sustainable consonants (`m`, `n`, `l`, `r`, `v`, `z`, `ng`, `zh`) have their own musical path and follow the MIDI pitch contour with restrained vibrato when the source contains a usable F0.
+- Hard stops/affricates and mixed consonant clusters are single-consumption events and are never used as a looping sustain reservoir.
+- Sustainable consonant expansion is capped when a word contains vowels; excess musical duration is reassigned to the longest vowel nucleus so long notes remain vowel-led like normal singing.
+- Text phonetic planning now distinguishes voiced sustain, noise sustain, transient, and mixed consonant behavior rather than one generic `Sustainable` class.
+
+### Song titles
+
+- Song workspaces receive a provisional non-generic title from the song request as soon as Song mode starts, preventing autosave from filling the library with `Untitled Song` while the producer is still running.
+- The producer title replaces that provisional title when the SongDesign response arrives.
+- Producer-title parsing now tolerates bullets/bold Markdown around `Song title:` and rejects placeholder values such as `Untitled Song`, `Untitled`, `New Song`, or `Song`.
+- Existing saved `Untitled Song` workspaces are repaired on library load when producer notes/history are available. Resone recovers the producer title or falls back to the original generation brief and persists the repaired metadata/index.
+
+## Vocal articulation refinement
+- Initial `y`/`w`/`r` are now voiced glides rather than transient consonants, preventing words such as `you` from disappearing at the onset.
+- Post-vocalic `r` is folded into the preceding rhotic vowel nucleus, so words such as `birthday` do not paste a normally-spoken `r` between sung vowel regions.
+- `-ay`/related `y` off-glides are reserved near the end of the vowel nucleus instead of being stretched across the whole note.
+- `/h/` has a dedicated aspirate renderer with controlled breath brightness/presence.
+- Unvoiced sustainable consonants use a bounded one-pass monotonic warp rather than repeated overlap-add grains.
+- Speech-word alignment preserves low-energy material between activity islands and enforces a minimum acoustic source region per lyric word.
+
+## 2026-09-18 – Glide/rhotic cleanup and live-launcher builds
+
+- Initial `y/w/r` glides are now explicitly carved from the front of a voiced source island when the pitch detector would otherwise absorb them into the vowel.
+- Glides are rendered once as natural formant transitions instead of being PSOLA/autotuned as independent mini-notes. This removes the growly/gargled onset-r artifact and makes `you` retain an audible `y -> oo` transition.
+- Mixed onsets such as `br` preserve the stop/noise portion separately and reserve only the short trailing voiced transition as the glide.
+- `/h/` received a modest additional breath-presence lift while remaining a one-pass aspirate.
+- A 2.5 ms fade is applied only to the first audible samples of the final vocal output to suppress the startup glip without softening later consonants.
+- `scripts/build-windows.ps1` now detects a running `wds.resone.launcher`. Normal development builds continue into `build/` without touching the live installation, so the launcher can stay running. Close the launcher and run the build again to deploy; `-ForceDeploy` explicitly overrides this protection.

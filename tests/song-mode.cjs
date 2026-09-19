@@ -5,6 +5,7 @@ const helpers=source.slice(source.indexOf('function requestMusic('),source.index
 const receive=source.slice(source.indexOf('function receive('),source.indexOf('window.SAMFD ='));
 vm.runInNewContext(`
 ${laneNotation}
+let workspaceTitle='Untitled Song',workspaceProducerDesign='',workspaceProducerVersion=0;
 let song={started:false,tempo:120,meter:'4/4',bars:8,lanes:[
  {id:'a',name:'Melody',bank:0,program:0,volume:.8,muted:false,solo:false,drums:false,includeInAi:true,notation:'',originalBrief:'',clipLengthBeats:0,prompts:[],notes:[]},
  {id:'b',name:'Bass',bank:0,program:32,volume:.8,muted:false,solo:false,drums:false,includeInAi:true,notation:'',originalBrief:'',clipLengthBeats:0,prompts:[],notes:[]},
@@ -13,6 +14,8 @@ let song={started:false,tempo:120,meter:'4/4',bars:8,lanes:[
 let serial=0;const sent=[];const clone=x=>JSON.parse(JSON.stringify(x)),lane=()=>song.lanes.find(l=>l.id===selected),
  send=(op,payload,requestId)=>sent.push({op,payload:payload?clone(payload):payload,requestId}),status=()=>{},render=()=>{},busy=()=>{},renderHistory=()=>{},
  commit=()=>send('project',song),readFields=()=>{},duration=()=>8*4,beatsPerBar=()=>4,
+ updateSongIdentity=()=>{},renderSongList=()=>{},scheduleWorkspaceSave=()=>{},
+ isGenericWorkspaceTitle=t=>!t||/^(untitled song|untitled|new song|song)$/i.test(t),provisionalSongTitle=t=>t||'Song',songDesignTitle=(p,b)=>p.title||p.state?.title||provisionalSongTitle(b),
  $=id=>({checked:id==='songMode'||id==='ahd',value:'',disabled:false,textContent:'',hidden:false}),crypto={randomUUID:()=>String(++serial)};
 ${helpers}
 ${receive}

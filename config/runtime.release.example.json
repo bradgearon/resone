@@ -19,11 +19,26 @@
       "enabled": true,
       "rid": "win-x64",
       "backend": "cpu",
-      "directory": "engines/asr/whispercpp-win-x64",
+      "directory": "engines/asr/whispercpp-nvidia-win-x64",
       "url": "https://YOUR-DOWNLOAD-HOST/whispercpp-win-x64.zip",
       "sha256": "REPLACE_WITH_64_HEX_SHA256",
       "requiredFiles": [
         "whisper-server.exe"
+      ]
+    },
+    {
+      "enabled": true,
+      "rid": "win-x64",
+      "backend": "dynamic",
+      "directory": "engines/tts/qwenttscpp-nvidia-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/qwenttscpp-nvidia-win-x64-server.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "requiredFiles": [
+        "qwen-server.exe",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll",
+        "ggml-cuda.dll"
       ]
     }
   ],
@@ -39,21 +54,25 @@
       "url": "https://YOUR-DOWNLOAD-HOST/ggml-large-v3-turbo.bin",
       "sha256": "REPLACE_WITH_64_HEX_SHA256",
       "enabled": true
-    }
-  ],
-  "services": [
+    },
     {
-      "name": "Whisper",
-      "executable": "engines/asr/whispercpp-win-x64/whisper-server.exe",
-      "arguments": [
-        "-m",
-        "{root}/models/asr/ggml-large-v3-turbo.bin",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8000"
-      ],
+      "path": "models/tts/qwen-talker-0.6b-base-Q8_0.gguf",
+      "url": "https://YOUR-DOWNLOAD-HOST/qwen-talker-0.6b-base-Q8_0.gguf",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "enabled": true
+    },
+    {
+      "path": "models/tts/qwen-talker-1.7b-voicedesign-Q8_0.gguf",
+      "url": "https://YOUR-DOWNLOAD-HOST/qwen-talker-1.7b-voicedesign-Q8_0.gguf",
+      "enabled": true,
+      "sha256": "REPLACE_WITH_64_HEX_SHA256"
+    },
+    {
+      "path": "models/tts/qwen-tokenizer-12hz-Q8_0.gguf",
+      "url": "https://YOUR-DOWNLOAD-HOST/qwen-tokenizer-12hz-Q8_0.gguf",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
       "enabled": true
     }
-  ]
+  ],
+  "services": []
 }

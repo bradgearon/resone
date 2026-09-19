@@ -7,6 +7,8 @@
 - **nlohmann/json**, vendored single header from the pinned iPlug2 tree, MIT; copyright/license retained in its header.
 - **WebView2 SDK** 1.0.2903.40 and **WIL** v1.0.240803.1, fetched by the pinned iPlug2 CMake files. WebView2 Evergreen Runtime is needed on the user's PC.
 - **.NET 9**, NativeAOT build/runtime components are governed by their Microsoft/.NET licenses.
-- **llama.cpp, whisper.cpp, qwentts.cpp and model weights** are not redistributed in this source bundle. Reuse your Six Stars engine packs or supply compatible builds and preserve their licenses. Model download URLs are inherited from the supplied project; model-specific licensing still applies.
+- **llama.cpp** is loaded from a prebuilt runtime engine pack and is pinned for the in-process ABI to release `b9870` / commit `2d973636e292ee6f75fadcf08d29cb33511f509f`. Resone does not clone or build llama.cpp. Preserve the llama.cpp/GGML licenses in distributed engine packs.
+- **qwentts.cpp** is consumed through the bundled `qwen-server.exe` / upstream `tts-server.exe` from a prebuilt runtime engine pack and is pinned to commit `a8a7716b530e49fed537c57711247c12fbbb903c` (server/API contract from that revision). Resone does not require a dynamic `qwen.dll`. Preserve its MIT license and the licenses for Qwen3-TTS/model weights in distributed engine/model packs.
+- **whisper.cpp and model weights** are external runtime/model dependencies. Preserve their applicable licenses and the licenses for any distributed model files.
 
 The user's Resone logo is in `assets/resone-logo.png`. Six Stars and Resonator source were supplied by the user; this extraction does not assign a new license to those files.

@@ -8,7 +8,7 @@ namespace Wds.Resone.Api.Ai;
 public sealed record ChatMessage(string Role, string Content);
 public interface ILocalChatModelClient
 {
-    Task<string> CompleteTextStreamingAsync(IReadOnlyList<ChatMessage> messages, int? maxTokens, string label, Action<string>? delta, CancellationToken token);
+    Task<string> CompleteTextStreamingAsync(IReadOnlyList<ChatMessage> messages, string label, Action<string>? delta, CancellationToken token);
 }
 
 public sealed class InstructionLibrary(string root)
@@ -20,7 +20,7 @@ public sealed class InstructionLibrary(string root)
 /// <summary>Scoped extraction of the Six Stars OpenAI SSE flow. Ignores reasoning deltas.</summary>
 public sealed class LocalAiClient(HttpClient http, ResoneSettings settings) : ILocalChatModelClient
 {
-    public async Task<string> CompleteTextStreamingAsync(IReadOnlyList<ChatMessage> messages, int? maxTokens, string label, Action<string>? delta, CancellationToken token)
+    public async Task<string> CompleteTextStreamingAsync(IReadOnlyList<ChatMessage> messages, string label, Action<string>? delta, CancellationToken token)
     {
         var wire = new JsonArray();
         foreach (var m in messages)
@@ -31,7 +31,6 @@ public sealed class LocalAiClient(HttpClient http, ResoneSettings settings) : IL
             ["messages"] = wire,
             ["stream"] = true,
             ["temperature"] = .7,
-            ["max_tokens"] = maxTokens ?? 8192,
             ["chat_template_kwargs"] = new JsonObject
             {
                 ["enable_thinking"] = false

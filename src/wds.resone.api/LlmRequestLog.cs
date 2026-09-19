@@ -11,10 +11,10 @@ public sealed class LlmRequestLog : IDisposable
     private readonly JsonObject record;
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private readonly StringBuilder raw = new();
-    public LlmRequestLog(ResoneSettings settings, string label, JsonObject request)
+    public LlmRequestLog(ResoneSettings settings, string label, JsonObject request, string? endpoint = null)
     {
         record = new JsonObject { ["label"] = label, ["startedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
-            ["endpoint"] = settings.LlmUrl, ["request"] = request.DeepClone(), ["status"] = "pending" };
+            ["endpoint"] = endpoint ?? settings.LlmUrl, ["request"] = request.DeepClone(), ["status"] = "pending" };
         #if RESONE_CUSTOMER_RELEASE
         return;
 #else

@@ -1,7 +1,13 @@
-param([string]$InstallDir = "$env:LOCALAPPDATA\Wds\Resone", [string]$SixStarsRuntimeRoot = "", [switch]$CustomerRelease, [string]$LicensePublicKeyFile = "", [string]$LicenseApiUrl = "", [string]$RuntimeManifest = "")
+param([string]$InstallDir = "$env:LOCALAPPDATA\Wds\Resone", [string]$SixStarsRuntimeRoot = "", [switch]$CustomerRelease, [switch]$ForceDeploy, [string]$LicensePublicKeyFile = "", [string]$LicenseApiUrl = "", [string]$RuntimeManifest = "")
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $PublishFlags = @()
+$RunningLauncher = @(Get-Process -Name 'wds.resone.launcher' -ErrorAction SilentlyContinue)
+$DeployInstall = $CustomerRelease -or $ForceDeploy -or $RunningLauncher.Count -eq 0
+if (!$DeployInstall) {
+  Write-Host 'Resone launcher is running. Building into build\ only and leaving the live installation untouched.' -ForegroundColor Yellow
+  Write-Host 'Close the launcher and run the build again to deploy, or pass -ForceDeploy if you intentionally want a live deploy.' -ForegroundColor DarkGray
+}
 if ($CustomerRelease) {
   if (!(Test-Path $LicensePublicKeyFile)) { throw 'Supply -LicensePublicKeyFile with your Cloudflare signing public JWK.' }
   $PublicKey = Get-Content $LicensePublicKeyFile -Raw | ConvertFrom-Json
@@ -86,11 +92,10 @@ function Checkout([string]$Url, [string]$Commit, [string]$Path) {
   }
   Run git @('-C',$Path,'checkout','--detach',$Commit)
 }
-New-Item -ItemType Directory -Force "$Root/third_party", $InstallDir | Out-Null
-# Remove the obsolete pre-llama.cpp local-inference shim from older installs.
-# Current Resone never loads resone_inference.dll; leaving it behind makes stale
-# AppData builds and diagnostics needlessly confusing during development.
-Remove-Item "$InstallDir/resone_inference.dll" -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force "$Root/third_party" | Out-Null
+if ($DeployInstall) { New-Item -ItemType Directory -Force $InstallDir | Out-Null }
+# Never mutate the running installation during a build-only pass.
+if ($DeployInstall) { Remove-Item "$InstallDir/resone_inference.dll" -Force -ErrorAction SilentlyContinue }
 Checkout 'https://github.com/iPlug2/iPlug2.git' 'd54f69050f517e43b941d88c2a170f0a840b9ee4' "$Root/third_party/iPlug2"
 Checkout 'https://github.com/steinbergmedia/vst3sdk.git' '9fad9770f2ae8542ab1a548a68c1ad1ac690abe0' "$Root/third_party/iPlug2/Dependencies/IPlug/VST3_SDK"
 Run git @('-C',"$Root/third_party/iPlug2/Dependencies/IPlug/VST3_SDK",'submodule','update','--init','base','pluginterfaces','public.sdk','cmake')
@@ -103,11 +108,17 @@ Run dotnet (@('publish',"$Root/src/wds.resone.launcher/wds.resone.launcher.cspro
 # This also repairs an existing installation once, so no manual deletion is needed.
 $AutoVst3Bundle = Join-Path $env:LOCALAPPDATA 'Programs\Common\VST3\Resone.vst3'
 Remove-LegacyVst3ShellIconArtifacts "$Root/build/ui/out/Resone.vst3"
-Remove-LegacyVst3ShellIconArtifacts (Join-Path $InstallDir 'Resone.vst3')
+if ($DeployInstall) { Remove-LegacyVst3ShellIconArtifacts (Join-Path $InstallDir 'Resone.vst3') }
 Remove-LegacyVst3ShellIconArtifacts $AutoVst3Bundle
 
 Run cmake @('-S',"$Root/src/wds.resone.ui",'-B',"$Root/build/ui",'-G','Visual Studio 17 2022','-A','x64')
-Run cmake @('--build',"$Root/build/ui",'--config','Release','--target','Resone-app','Resone-vst3','resone_llama_bridge','--parallel')
+# Source archives are commonly extracted over an existing development tree. The
+# extracted source timestamps can be older than an already-built .obj/.dll, which
+# previously allowed an obsolete resone_llama_bridge.dll to survive a rebuild.
+# Clean the native build first, then build the bridge explicitly before the app.
+Write-Host 'Cleaning native UI build to prevent stale native bridge/object files...'
+Run cmake @('--build',"$Root/build/ui",'--config','Release','--target','resone_llama_bridge','--clean-first','--parallel')
+Run cmake @('--build',"$Root/build/ui",'--config','Release','--target','Resone-app','Resone-vst3','wds_resone_vocals','--parallel')
 
 $StandaloneBinary = "$Root/build/ui/out/Resone.exe"
 $Vst3Module = Get-ChildItem "$Root/build/ui/out/Resone.vst3" -Recurse -File -Filter 'Resone.vst3' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -119,6 +130,19 @@ if (!$Vst3Module -or !(Test-WindowsIconResource $Vst3Module.FullName)) {
 }
 Write-Host 'Verified Resone icon resource in standalone and VST3 binaries.'
 
+# Keep build outputs complete even when the live launcher remains running.
+$VocalDll = "$Root/build/ui/out/Release/wds.resone.vocals.dll"
+if (!(Test-Path $VocalDll)) { $VocalDll = "$Root/build/ui/out/wds.resone.vocals.dll" }
+if (!(Test-Path $VocalDll)) { throw 'wds.resone.vocals.dll was not produced by the native build.' }
+Copy-Item $VocalDll "$Root/build/launcher/wds.resone.vocals.dll" -Force
+Copy-Item $VocalDll "$Root/build/api/wds.resone.vocals.dll" -Force
+
+if (!$DeployInstall) {
+  Write-Host "Build complete. Live launcher was left running; install directory was not modified." -ForegroundColor Green
+  Write-Host "Build outputs: $Root/build/launcher, $Root/build/api, $Root/build/ui" -ForegroundColor Cyan
+  exit 0
+}
+
 # Do not add desktop.ini/Plugin.ico shell decoration to the .vst3 directory.
 # The icon that matters is embedded in the VST3 module and assigned to the native
 # editor window; decorating the bundle folder caused repeat-build AccessDenied errors.
@@ -127,6 +151,7 @@ Copy-Item "$Root/build/launcher/wds.resone.launcher.exe" $InstallDir -Force
 Copy-Item "$Root/src/wds.resone.ui/resources/Resone.ico" $InstallDir -Force
 Copy-Item "$Root/build/ui/out/Resone.exe" "$InstallDir/wds.resone.ui.exe" -Force
 Copy-Item "$Root/build/ui/out/Release/resone_llama_bridge.dll" $InstallDir -Force
+Copy-Item $VocalDll $InstallDir -Force
 Copy-Item "$Root/third_party/vcpkg/installed/x64-windows/bin/*.dll" $InstallDir -Force
 # FluidSynth uses different DLL basenames across distributions. Keep our ABI loader's name stable.
 $Fluid = Get-ChildItem "$InstallDir/*fluidsynth*.dll" | Select-Object -First 1
@@ -158,7 +183,7 @@ if ($SourceSettings.PSObject.Properties['nativeInference']) { $UseLocalInference
 if ($SourceSettings.PSObject.Properties['useLocalInference']) { $UseLocalInference = $UseLocalInference -or [bool]$SourceSettings.useLocalInference }
 $Settings | Add-Member -NotePropertyName nativeInference -NotePropertyValue $UseLocalInference -Force
 $Settings | Add-Member -NotePropertyName useLocalInference -NotePropertyValue $UseLocalInference -Force
-foreach ($NativeField in @('llamaEngineDirectories','nativeModelPath','contextTokens','gpuLayers','allowCpuFallback','flashAttention','reasoningEnabled','warmModelOnStackStart','temperature','topK','topP')) {
+foreach ($NativeField in @('llamaEngineDirectories','nativeModelPath','contextTokens','gpuLayers','allowCpuFallback','flashAttention','reasoningEnabled','warmModelOnStackStart','temperature','topK','topP','useLocalWhisper','whisperEngineDirectories','whisperServerName','whisperModelPath','whisperLanguage','qwenTtsEngineDirectories','qwenTtsServerName','qwenTtsStartupTimeoutSeconds','serviceDelays','qwenTtsTalkerPath','qwenTtsVoiceDesignTalkerPath','qwenTtsCodecPath','qwenTtsLanguage','qwenTtsFlashAttention','qwenTtsClampFp16','qwenTtsMaxBatch','qwenTtsCodecChunkSeconds')) {
   if ($SourceSettings.PSObject.Properties[$NativeField]) {
     $Settings | Add-Member -NotePropertyName $NativeField -NotePropertyValue $SourceSettings.PSObject.Properties[$NativeField].Value -Force
   }
@@ -182,7 +207,7 @@ $SourceRuntime = Get-Content "$Root/config/runtime.json" -Raw | ConvertFrom-Json
 # Provisioning configuration is source-controlled for development. Synchronize
 # engine/model download settings so editing config/runtime.json cannot leave an
 # older AppData installation silently using stale engine-pack URLs.
-foreach ($RuntimeField in @('useExistingStack','backend','requireHashes','enginePacks','models')) {
+foreach ($RuntimeField in @('useExistingStack','backend','requireHashes','enginePacks','models','services')) {
   if ($SourceRuntime.PSObject.Properties[$RuntimeField]) {
     $Runtime | Add-Member -NotePropertyName $RuntimeField -NotePropertyValue $SourceRuntime.PSObject.Properties[$RuntimeField].Value -Force
   }

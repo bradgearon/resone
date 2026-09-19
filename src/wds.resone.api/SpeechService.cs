@@ -1,80 +1,85 @@
-using System.Net.Http.Headers;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Nodes;
+using Wds.Resone.Api.VocalSinging;
 
 namespace Wds.Resone.Api;
-/// <summary>Whisper file submission and Qwen PCM streaming, isolated from composition.</summary>
-public sealed class SpeechService(HttpClient http, ResoneSettings settings)
+/// <summary>Local Whisper transcription and Qwen PCM streaming, isolated from composition.</summary>
+public sealed class SpeechService : IAsyncDisposable
 {
-    public async Task<string> TranscribeAsync(byte[] wav, CancellationToken token)
+    private readonly HttpClient http;
+    private readonly ResoneSettings settings;
+    private readonly WhisperCppRuntime whisper;
+    private readonly QwenTtsServiceManager ttsManager;
+
+    public SpeechService(HttpClient http, ResoneSettings settings, QwenTtsServiceManager ttsManager)
     {
-        if (wav.Length < 44 || wav.Length > 6000000)
-            throw new ArgumentException("Voice recording must be a WAV of at most 90 seconds.");
-        using var form = new MultipartFormDataContent();
-        var audio = new ByteArrayContent(wav);
-        audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
-        form.Add(audio, "file", "recording.wav");
-        form.Add(new StringContent("json"), "response_format");
-        using var response = await http.PostAsync(settings.SttUrl, form, token);
-        response.EnsureSuccessStatusCode();
-        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token));
-        return json.RootElement.GetProperty("text").GetString()?.Trim() ?? "";
+        this.http = http;
+        this.settings = settings;
+        this.ttsManager = ttsManager;
+        whisper = new WhisperCppRuntime(http, settings);
     }
+
+    /// <summary>Starts loading the bundled whisper.cpp model/runtime while microphone capture continues.</summary>
+    public Task<string> WarmTranscriptionAsync(CancellationToken token) => whisper.WarmAsync(token);
+
+    public Task<string> TranscribeAsync(byte[] wav, CancellationToken token) => whisper.TranscribeAsync(wav, token);
 
     public async Task SpeakAsync(string text, Func<byte[], Task> chunk, CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(text) || text.Length > 12000)
             throw new ArgumentException("Speech text must be 1–12000 characters.");
         if (!string.IsNullOrWhiteSpace(settings.TtsReferenceAudioPath))
-        {
-            var path = Path.IsPathRooted(settings.TtsReferenceAudioPath) ? settings.TtsReferenceAudioPath : Path.Combine(Environment.GetEnvironmentVariable("RESONE_HOME") ?? AppContext.BaseDirectory, settings.TtsReferenceAudioPath);
-            if (new FileInfo(path).Length > 10 * 1024 * 1024)
-                throw new ArgumentException("TTS reference WAV exceeds 10 MiB.");
-            var registration = new JsonObject
-            {
-                ["name"] = settings.TtsVoice,
-                ["wav_b64"] = Convert.ToBase64String(await File.ReadAllBytesAsync(path, token))
-            };
-            if (!string.IsNullOrWhiteSpace(settings.TtsReferenceText))
-                registration["ref_text"] = settings.TtsReferenceText;
-            var endpoint = new Uri(new Uri(settings.TtsUrl), "/v1/audio/voices");
-            using var voice = await http.PostAsync(endpoint, new StringContent(registration.ToJsonString(), Encoding.UTF8, "application/json"), token);
-            voice.EnsureSuccessStatusCode();
-        }
+            throw new NotSupportedException("Reference-audio voices are moving to Resone's local voice source. Use a named Qwen CustomVoice voice for now.");
 
-        var data = new JsonObject
+        string temp = Path.Combine(Path.GetTempPath(), "Resone", "speech", Guid.NewGuid().ToString("N") + ".wav");
+        Directory.CreateDirectory(Path.GetDirectoryName(temp)!);
+        try
         {
-            ["model"] = "qwen3-tts-base",
-            ["input"] = text,
-            ["voice"] = settings.TtsVoice,
-            ["response_format"] = "pcm"
-        };
-        using var request = new HttpRequestMessage(HttpMethod.Post, settings.TtsUrl)
-        {
-            Content = new StringContent(data.ToJsonString(), Encoding.UTF8, "application/json")
-        };
-        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
-        response.EnsureSuccessStatusCode();
-        using var stream = await response.Content.ReadAsStreamAsync(token);
-        var bytes = new byte[12000];
-        int count = 0;
-        while (true)
-        {
-            int n = await stream.ReadAsync(bytes.AsMemory(count), token);
-            if (n == 0)
-                break;
-            count += n;
-            if (count == bytes.Length)
+            await ttsManager.SynthesizeDefaultWavAsync(text, settings.TtsVoice, temp, token).ConfigureAwait(false);
+            byte[] wav = await File.ReadAllBytesAsync(temp, token).ConfigureAwait(false);
+            int data = FindWaveData(wav, out int count, out int sampleRate, out short channels, out short bits);
+            if (sampleRate != 24000 || channels != 1 || bits != 16)
+                throw new InvalidDataException($"Qwen TTS returned unsupported PCM: {sampleRate} Hz, {channels} channels, {bits}-bit.");
+            const int chunkBytes = 12000;
+            for (int offset = 0; offset < count; offset += chunkBytes)
             {
-                await chunk(bytes.ToArray());
-                count = 0;
+                token.ThrowIfCancellationRequested();
+                int n = Math.Min(chunkBytes, count - offset);
+                if ((n & 1) != 0) n--;
+                if (n > 0) await chunk(wav.AsSpan(data + offset, n).ToArray()).ConfigureAwait(false);
             }
         }
-
-        if (count % 2 != 0)
-            throw new InvalidDataException("Truncated PCM sample from TTS.");
-        if (count > 0)
-            await chunk(bytes[..count]);
+        finally { try { File.Delete(temp); } catch { } }
     }
+
+    private static int FindWaveData(byte[] wav, out int count, out int sampleRate, out short channels, out short bits)
+    {
+        if (wav.Length < 44 || Encoding.ASCII.GetString(wav, 0, 4) != "RIFF" || Encoding.ASCII.GetString(wav, 8, 4) != "WAVE")
+            throw new InvalidDataException("Qwen TTS did not return a WAV file.");
+        sampleRate = 0; channels = 0; bits = 0; count = 0;
+        int pos = 12;
+        while (pos + 8 <= wav.Length)
+        {
+            string id = Encoding.ASCII.GetString(wav, pos, 4);
+            int size = BitConverter.ToInt32(wav, pos + 4);
+            int body = pos + 8;
+            if (size < 0 || body + size > wav.Length) throw new InvalidDataException("Invalid WAV chunk.");
+            if (id == "fmt " && size >= 16)
+            {
+                short format = BitConverter.ToInt16(wav, body);
+                channels = BitConverter.ToInt16(wav, body + 2);
+                sampleRate = BitConverter.ToInt32(wav, body + 4);
+                bits = BitConverter.ToInt16(wav, body + 14);
+                if (format != 1) throw new InvalidDataException("Qwen TTS WAV is not PCM.");
+            }
+            else if (id == "data")
+            {
+                count = size;
+                if (sampleRate <= 0) throw new InvalidDataException("WAV data appeared before a valid fmt chunk.");
+                return body;
+            }
+            pos = body + size + (size & 1);
+        }
+        throw new InvalidDataException("Qwen TTS WAV has no data chunk.");
+    }
+    public ValueTask DisposeAsync() => whisper.DisposeAsync();
 }

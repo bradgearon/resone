@@ -17,6 +17,11 @@
       "enabled": false
     },
     {
+      "path": "models/tts/qwen-talker-1.7b-voicedesign-Q8_0.gguf",
+      "url": "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-talker-1.7b-voicedesign-Q8_0.gguf",
+      "enabled": false
+    },
+    {
       "path": "models/tts/qwen-tokenizer-12hz-Q8_0.gguf",
       "url": "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-tokenizer-12hz-Q8_0.gguf",
       "enabled": false
@@ -44,36 +49,6 @@
         "on"
       ],
       "enabled": true
-    },
-    {
-      "name": "Whisper",
-      "executable": "engines/asr/whispercpp-nvidia-win-x64/whisper-server.exe",
-      "arguments": [
-        "-m",
-        "{root}/models/asr/ggml-large-v3-turbo.bin",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8000",
-        "--language",
-        "en"
-      ],
-      "enabled": true
-    },
-    {
-      "name": "Qwen TTS",
-      "executable": "engines/tts/qwenttscpp-nvidia-win-x64/tts-server.exe",
-      "arguments": [
-        "--model",
-        "{root}/models/tts/qwen-talker-0.6b-base-Q8_0.gguf",
-        "--codec",
-        "{root}/models/tts/qwen-tokenizer-12hz-Q8_0.gguf",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8101"
-      ],
-      "enabled": false
     }
   ],
   "enginePacks": [
@@ -87,6 +62,21 @@
       "requiredFiles": [
         "llama.dll",
         "ggml.dll"
+      ]
+    },
+    {
+      "enabled": false,
+      "rid": "win-x64",
+      "backend": "dynamic",
+      "directory": "engines/tts/qwenttscpp-nvidia-win-x64",
+      "url": "https://YOUR-DOWNLOAD-HOST/qwenttscpp-nvidia-win-x64-server.zip",
+      "sha256": "REPLACE_WITH_64_HEX_SHA256",
+      "requiredFiles": [
+        "qwen-server.exe",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll",
+        "ggml-cuda.dll"
       ]
     }
   ]

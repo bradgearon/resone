@@ -139,8 +139,9 @@ globalThis.MidiImport = (() => {
 'use strict';
 const $ = id => document.getElementById(id),
       colors = [ '#f58dc9', '#57c9dc', '#a292f3', '#ffad76', '#76dfa7', '#ffda7d' ];
-const roles = [ 'Melody', 'Bass', 'Chords', 'Drums', 'Guitar', 'Strings' ],
-      glyphs = [ '♪', '𝄢', '≡', '▤', '✦', '△' ];
+const roles = [ 'Melody', 'Bass', 'Chords', 'Drums', 'Guitar', 'Strings', 'Vocals' ],
+      glyphs = [ '♪', '𝄢', '≡', '▤', '✦', '△', '♬' ];
+const newWorkspaceId = () => crypto.randomUUID().replaceAll('-', '');
 const fresh = () => ({
     started : false,
     tempo : 120,
@@ -150,12 +151,18 @@ const fresh = () => ({
                           id : crypto.randomUUID(),
                           name,
                           bank : i === 3 ? 128 : 0,
-                          program : [ 0, 32, 89, 0, 24, 48 ][i],
+                          program : [ 0, 32, 89, 0, 24, 48, 53 ][i],
                           volume : .8,
                           muted : false,
                           solo : false,
                           drums : i === 3,
+                          vocals : i === 6,
                           includeInAi : i === 0,
+                          lyrics : '',
+                          voiceId : '',
+                          renderedVocalPath : '',
+                          renderedVocalSignature : '',
+                          vocalGuidance : [],
                           notation : '',
                           originalBrief : '',
                           clipLengthBeats : 0,
@@ -165,15 +172,146 @@ const fresh = () => ({
 });
 let song = fresh(), selected = song.lanes[0].id, presets = [], history = [], undo = [], redo = [],
     pending = null, songRun = null, recording = false, transport = 'stopped', anchor = 0, anchorTime = 0, zoom = 28,
-    drag = null;
+    drag = null, savedVoices = [], previewMelodies = [], workspaceSongs = [], workspaceId = newWorkspaceId(),
+    workspaceTitle = 'Untitled Song', workspaceProducerDesign = '', workspaceBootstrapped = false, workspaceLoadRequest = '',
+    workspaceView = 'history', workspaceSaveTimer = 0, workspaceHistoryVersion = 0, workspaceHistorySavedVersion = 0,
+    workspaceProducerVersion = 0, workspaceProducerSavedVersion = 0, workspaceSaveRequests = new Map(), voicePreview = null, voiceAudio = null;
+const DEFAULT_VOICE_SAMPLE_TEXT = "Thank you for using Resone by We Develop Software, I can't wait to hear what you create.";
+function setVoiceLibrary(payload) {
+    savedVoices = Array.isArray(payload?.voices) ? payload.voices.filter(v => v?.id && v?.name) : [];
+    previewMelodies = Array.isArray(payload?.previewMelodies) ? payload.previewMelodies : previewMelodies;
+    const select = $('vocalVoice');
+    if (select) {
+        const active = lane()?.voiceId || payload?.lastSelectedVoiceId || '';
+        select.replaceChildren();
+        if (!savedVoices.length) select.add(new Option('Create a voice…', ''));
+        for (const v of savedVoices) select.add(new Option(v.name, v.id));
+        const chosen = savedVoices.some(v => v.id === active) ? active
+            : savedVoices.some(v => v.id === payload?.lastSelectedVoiceId) ? payload.lastSelectedVoiceId
+            : savedVoices[0]?.id || '';
+        if (chosen) select.value = chosen;
+        for (const l of song.lanes) if (l.vocals && (!l.voiceId || l.voiceId === 'default' || !savedVoices.some(v => v.id === l.voiceId))) l.voiceId = chosen;
+    }
+    const melody = $('voicePreviewMelody');
+    if (melody && previewMelodies.length) {
+        const current = melody.value;
+        melody.replaceChildren(...previewMelodies.map(v => new Option(v.name, v.id)));
+        melody.value = previewMelodies.some(v => v.id === current) ? current : (previewMelodies[0]?.id || 'fun');
+    }
+    render();
+}
 const clone = x => JSON.parse(JSON.stringify(x)),
       lane = () => song.lanes.find(l => l.id === selected) || song.lanes[0];
+function normalizedWorkspaceTitle(value) {
+    const t = String(value || '').replace(/\s+/g, ' ').trim();
+    return (t || 'Untitled Song').slice(0, 120);
+}
+function isGenericWorkspaceTitle(value) {
+    const t=String(value||'').replace(/\s+/g,' ').trim().toLowerCase();
+    return !t || t==='untitled' || t==='untitled song' || t==='new song' || t==='song' || t==='new composition';
+}
+function provisionalSongTitle(brief) {
+    let t=String(brief||'').replace(/\s+/g,' ').trim();
+    t=t.replace(/^(?:please\s+)?(?:make|create|write|compose|generate)\s+(?:me\s+)?(?:a|an|the)?\s*/i,'').trim();
+    const words=t.split(' ').filter(Boolean);
+    if(words.length>7)t=words.slice(0,7).join(' ');
+    if(t.length>64)t=t.slice(0,64).trimEnd()+'…';
+    return normalizedWorkspaceTitle(t);
+}
+function songDesignTitle(payload, brief) {
+    const candidates=[payload?.title,payload?.state?.title];
+    const design=String(payload?.design||'');
+    const m=design.match(/^\s*(?:[-*]\s*)?(?:\*{1,2})?Song\s+title(?:\*{1,2})?\s*:\s*(?:\*{1,2})?([^\r\n]+)/im);
+    if(m)candidates.push(m[1].replace(/^[\s*_`"'“”]+|[\s*_`"'“”]+$/g,''));
+    for(const value of candidates) if(value && !isGenericWorkspaceTitle(value)) return normalizedWorkspaceTitle(value);
+    return provisionalSongTitle(brief);
+}
+function workspaceHistoryPayload() {
+    // History snapshots are already immutable clones when they are created. Avoid cloning
+    // every saved song again on every autosave; JSON serialization in send() is enough.
+    return history.slice(-40).map(h => ({brief:h.brief || '', laneId:h.laneId || '', createdUtc:h.createdUtc || new Date().toISOString(), song:h.song}));
+}
+function saveWorkspace(force=false) {
+    if (!workspaceBootstrapped) return;
+    if (!force && !song.started && !history.length && workspaceTitle === 'Untitled Song') return;
+    clearTimeout(workspaceSaveTimer);
+    const payload={id:workspaceId,title:workspaceTitle,project:song};
+    const ack={historyVersion:null,producerVersion:null};
+    if (workspaceHistoryVersion !== workspaceHistorySavedVersion) {
+        payload.history=workspaceHistoryPayload(); ack.historyVersion=workspaceHistoryVersion;
+    }
+    if (workspaceProducerVersion !== workspaceProducerSavedVersion) {
+        payload.producerDesign=workspaceProducerDesign; ack.producerVersion=workspaceProducerVersion;
+    }
+    const id=crypto.randomUUID(); workspaceSaveRequests.set(id,ack); send('workspaceSave',payload,id);
+}
+function scheduleWorkspaceSave() {
+    if (!workspaceBootstrapped) return;
+    clearTimeout(workspaceSaveTimer);
+    workspaceSaveTimer = setTimeout(() => saveWorkspace(false), 350);
+}
+function updateSongIdentity() {
+    if ($('songTitle') && document.activeElement !== $('songTitle')) $('songTitle').textContent = workspaceTitle;
+}
+function setWorkspaceSongs(values) {
+    workspaceSongs = Array.isArray(values) ? values : [];
+    renderSongList();
+}
+function renderSongList() {
+    const root = $('songList'); if (!root) return;
+    root.replaceChildren();
+    if (!workspaceSongs.length) {
+        const p=document.createElement('p'); p.className='empty'; p.textContent='Saved songs will appear here.'; root.append(p); return;
+    }
+    for (const item of workspaceSongs) {
+        const b=document.createElement('button'); b.className='songListItem'+(item.id===workspaceId?' active':'');
+        const text=document.createElement('span'); text.className='songListText';
+        const strong=document.createElement('strong'); strong.textContent=item.title || 'Untitled Song';
+        const small=document.createElement('small');
+        const date=item.updatedUtc?new Date(item.updatedUtc):null; small.textContent=date&&!Number.isNaN(date.getTime())?'Updated '+date.toLocaleString():'Saved song';
+        text.append(strong,small); b.append(text); b.onclick=()=>loadWorkspaceSong(item.id); root.append(b);
+    }
+}
+function loadWorkspaceSong(id) {
+    if (pending || !id || id===workspaceId) return;
+    saveWorkspace(false);
+    workspaceLoadRequest=crypto.randomUUID();
+    send('workspaceLoad',{id},workspaceLoadRequest); status('Loading saved song…');
+}
+function createNewWorkspaceSong(forceSave=false) {
+    if (forceSave) saveWorkspace(true);
+    send('stop'); song=fresh(); selected=song.lanes[0].id; history=[]; undo=[]; redo=[]; songRun=null;
+    workspaceId=newWorkspaceId(); workspaceTitle='Untitled Song'; workspaceProducerDesign='';
+    workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceSaveRequests.clear();
+    $('brief').value=''; updateSongIdentity(); renderHistory(); renderSongList(); commit();
+    status('New song. Describe your first idea.');
+}
+function toggleLibraryView() {
+    workspaceView = workspaceView === 'history' ? 'songs' : 'history';
+    $('leftTrack')?.classList.toggle('showSongs', workspaceView === 'songs');
+    if ($('leftPanelHeading')) $('leftPanelHeading').textContent = workspaceView === 'songs' ? 'Songs' : 'History';
+    if ($('historyCount')) $('historyCount').textContent = workspaceView === 'songs' ? `${workspaceSongs.length} saved` : `${history.length} prompts`;
+}
+function vocalSignature(l) {
+    return JSON.stringify({tempo:song.tempo,notes:l.notes||[],lyrics:l.lyrics||'',voiceId:l.voiceId||'',guidance:l.vocalGuidance||[]});
+}
+function invalidateVocalRenders() {
+    for (const l of song.lanes) if (l.vocals && l.renderedVocalPath && l.renderedVocalSignature !== vocalSignature(l)) {
+        l.renderedVocalPath = ''; l.renderedVocalSignature = '';
+    }
+}
 function normalizeLaneAiDefaults(project) {
     if (!project?.lanes?.length) return project;
     project.lanes.forEach((l, i) => {
         // Preserve explicit saved choices. Older projects that predate the
         // checkbox receive the new default: Melody/first lane only.
         if (typeof l.includeInAi !== 'boolean') l.includeInAi = i === 0 || l.name === 'Melody';
+        if (typeof l.vocals !== 'boolean') l.vocals = l.name === 'Vocals';
+        if (typeof l.lyrics !== 'string') l.lyrics = '';
+        if (typeof l.voiceId !== 'string') l.voiceId = '';
+        if (typeof l.renderedVocalPath !== 'string') l.renderedVocalPath = '';
+        if (typeof l.renderedVocalSignature !== 'string') l.renderedVocalSignature = '';
+        if (!Array.isArray(l.vocalGuidance)) l.vocalGuidance = [];
     });
     return project;
 }
@@ -195,6 +333,7 @@ function commit() {
     for (const l of song.lanes) LaneNotation.sync(l, song.tempo, song.meter);
     send('project', song);
     render();
+    scheduleWorkspaceSave();
 }
 function checkpoint() {
     undo.push(clone(song));
@@ -203,6 +342,7 @@ function checkpoint() {
     redo = [];
 }
 function changed() {
+    invalidateVocalRenders();
     send('stop');
     transport = 'stopped';
     commit();
@@ -237,7 +377,11 @@ function busy() {
     $('play').disabled = b;
     $('restart').disabled = b;
     $('clear').disabled = b || recording;
+    if ($('saveNew')) $('saveNew').disabled = b || recording;
+    if ($('newVoice')) $('newVoice').disabled = b || recording;
+    if ($('deleteSong')) $('deleteSong').disabled = b || recording;
     $('songMode').disabled = b || recording;
+    if ($('renderVocals')) $('renderVocals').disabled = b || recording || !lane()?.vocals || !(lane()?.notes?.length) || !lane()?.voiceId || !savedVoices.some(v=>v.id===lane().voiceId); 
     for (const control of document.querySelectorAll('.laneActions input')) control.disabled = b;
     for (const control of document.querySelectorAll('.laneActions button')) control.disabled = b || song.lanes.length === 1;
 }
@@ -306,9 +450,17 @@ function startSongGeneration(text) {
         const includedIds = selectedSongLaneIds();
         if (!includedIds.length) throw Error('Check at least one lane for song generation.');
         const previous = clone(song), id = crypto.randomUUID();
+        // Give the workspace a useful identity immediately. The producer's
+        // generated title replaces this when SongDesign returns, but autosave can
+        // no longer create a run of "Untitled Song" entries while generation is active.
+        if (isGenericWorkspaceTitle(workspaceTitle)) {
+            workspaceTitle=provisionalSongTitle(text);
+            updateSongIdentity(); renderSongList(); scheduleWorkspaceSave();
+        }
         songRun = {
             brief : text.trim(), previous, includedIds, state : null, design : '',
-            sectionIndex : 0, laneIndex : 0, selectedLaneId : selected
+            sectionIndex : 0, laneIndex : 0, selectedLaneId : selected,
+            completedChunks : 0, failures : []
         };
         pending = {id, kind : 'songDesign', brief : text.trim(), previous, includedIds};
         send('stop'); transport = 'stopped'; anchor = 0;
@@ -359,6 +511,19 @@ function nextSongChunk() {
     send('songChunk', {project, songState : songRun.state, sectionId : section.id, laneId,
         description : section.plan || `${section.title} section`, useAhd : $('ahd').checked}, id);
 }
+function skipFailedSongChunk(message) {
+    if (!songRun || pending?.kind !== 'songChunk') return false;
+    const section = songRun.state?.sections?.[pending.sectionIndex], target = song.lanes.find(l => l.id === pending.laneId);
+    const label = `${section?.title || pending.sectionId || 'Section'} · ${target?.name || pending.laneId}`;
+    songRun.failures.push({sectionId : pending.sectionId, laneId : pending.laneId, message : String(message || 'Generation failed.')});
+    songRun.laneIndex = pending.laneIndex + 1;
+    pending = null;
+    status(`Song · Skipped ${label}: ${message || 'generation failed'} · continuing…`);
+    busy();
+    nextSongChunk();
+    return true;
+}
+
 function applySongChunk(payload) {
     if (!songRun || pending?.kind !== 'songChunk') throw Error('Song generation state was lost.');
     const tracks = payload.tracks;
@@ -375,9 +540,11 @@ function applySongChunk(payload) {
     target.prompts = [...(target.prompts || []), `[${songRun.state.sections[pending.sectionIndex].title}] ${songRun.brief}`];
     target.clipLengthBeats = Math.max(Number(target.clipLengthBeats)||0, ...songRun.state.sections.map(s => sectionBounds(s).end));
     target.notation = ''; delete target.notationSignature;
+    if (target.vocals) { target.renderedVocalPath = ''; target.renderedVocalSignature = ''; }
     LaneNotation.sync(target, song.tempo, song.meter); LaneNotation.accept(target);
     songRun.state = payload.songState || songRun.state;
     song.started = true;
+    songRun.completedChunks = (songRun.completedChunks || 0) + 1;
     songRun.laneIndex = pending.laneIndex + 1;
     pending = null;
     commit();
@@ -385,12 +552,19 @@ function applySongChunk(payload) {
 }
 function finishSongGeneration() {
     if (!songRun) return;
-    const run = songRun;
-    undo.push(run.previous); if (undo.length > 40) undo.shift(); redo = [];
+    const run = songRun, completed = Number(run.completedChunks || 0), failures = run.failures || [];
+    if (completed > 0) {
+        undo.push(run.previous); if (undo.length > 40) undo.shift(); redo = [];
+    }
     selected = run.selectedLaneId && song.lanes.some(l => l.id === run.selectedLaneId) ? run.selectedLaneId : song.lanes[0].id;
-    history.push({brief : run.brief, song : clone(song), laneId : selected}); if (history.length > 40) history.shift();
+    if (completed > 0) {
+        history.push({brief : run.brief, song : clone(song), laneId : selected, createdUtc:new Date().toISOString()}); if (history.length > 40) history.shift(); if (typeof workspaceHistoryVersion !== 'undefined') workspaceHistoryVersion++;
+    }
     songRun = null; pending = null; commit(); renderHistory(); busy();
-    status('Song complete. Generated every checked lane through every producer section.');
+    if (failures.length)
+        status(`Song complete with ${failures.length} skipped generation${failures.length === 1 ? '' : 's'}. ${completed} chunk${completed === 1 ? '' : 's'} completed.`);
+    else
+        status('Song complete. Generated every checked lane through every producer section.');
     if (duration()) send('play', song);
 }
 function submit() {
@@ -418,7 +592,10 @@ $('voice').onclick = () => {
         readFields();
         const id = crypto.randomUUID();
         pending = {id, kind : 'voice', laneId : selected};
+        // Start capture first so ASR initialization can never delay the microphone. Then warm the
+        // bundled whisper.cpp runtime in parallel while the user is speaking.
         send('voiceStart', {}, id);
+        send('asrWarm', {}, crypto.randomUUID());
         busy();
     } catch (e) {
         status(e.message);
@@ -448,18 +625,8 @@ $('saveSettings').onclick = e => {
     }
     send('settings', {apiUrl : url});
 };
-$('clear').onclick = () => {
-    checkpoint();
-    send('stop');
-    song = fresh();
-    songRun = null;
-    selected = song.lanes[0].id;
-    history = [];
-    $('brief').value = '';
-    commit();
-    renderHistory();
-    status('New song. Describe your first idea.');
-};
+$('clear').onclick = () => { if (!pending) createNewWorkspaceSong(false); };
+$('saveNew').onclick = () => { if (!pending) createNewWorkspaceSong(true); };
 $('undo').onclick = () => {
     if (undo.length && !pending) {
         redo.push(clone(song));
@@ -510,7 +677,13 @@ $('addLane').onclick = () => {
         muted : false,
         solo : false,
         drums : false,
+        vocals : false,
         includeInAi : false,
+        lyrics : '',
+        voiceId : '',
+        renderedVocalPath : '',
+        renderedVocalSignature : '',
+        vocalGuidance : [],
         notation : '',
         originalBrief : '',
         clipLengthBeats : 0,
@@ -589,7 +762,7 @@ function instrumentName(l) {
 function renderHistory() {
     const root = $('history');
     root.replaceChildren();
-    $('historyCount').textContent = history.length + ' prompts';
+    $('historyCount').textContent = workspaceView === 'songs' ? workspaceSongs.length + ' saved' : history.length + ' prompts';
     if (!history.length) {
         const p = document.createElement('p');
         p.className = 'empty';
@@ -623,6 +796,19 @@ function render() {
     $('targetLane').textContent = songModeEnabled()
         ? 'Song mode: producer plans sections; checked lanes generate one at a time · Editing: ' + lane().name
         : 'Editing: ' + lane().name + ' · Drop MIDI anywhere to import into this lane';
+    updateSongIdentity();
+    const vocal = lane(), vocalPanel = $('vocalPanel');
+    vocalPanel.hidden = !vocal.vocals;
+    if (vocal.vocals) {
+        if (document.activeElement !== $('vocalLyrics')) $('vocalLyrics').value = vocal.lyrics || '';
+        const voiceSelect=$('vocalVoice');
+        if (voiceSelect) {
+            const wanted=vocal.voiceId || '';
+            if (wanted && [...voiceSelect.options].some(o=>o.value===wanted)) voiceSelect.value=wanted;
+            else if (savedVoices.length) { vocal.voiceId=savedVoices[0].id; voiceSelect.value=vocal.voiceId; }
+        }
+        $('renderVocals').textContent = vocal.renderedVocalPath ? '♬ Re-render singing' : '♬ Render singing';
+    }
     const seconds = duration() * 60 / song.tempo;
     $('duration').textContent =
         Math.floor(seconds / 60) + ':' + String(Math.floor(seconds % 60)).padStart(2, '0');
@@ -648,7 +834,7 @@ function render() {
         title.className = 'laneTitle';
         const icon = document.createElement('span');
         icon.className = 'glyph';
-        icon.textContent = glyphs[i % 6];
+        icon.textContent = l.vocals ? '♬' : glyphs[i % glyphs.length];
         const name = document.createElement('div');
         name.textContent = l.name;
         const sub = document.createElement('small');
@@ -726,11 +912,11 @@ function render() {
         out.style.setProperty('--lane', colors[i % 6]);
         const g = document.createElement('span');
         g.className = 'glyph';
-        g.textContent = glyphs[i % 6];
+        g.textContent = l.vocals ? '♬' : glyphs[i % glyphs.length];
         const t = document.createElement('div');
         t.textContent = l.name + ' MIDI';
         const n = document.createElement('small');
-        n.textContent = l.notes.length + ' notes · ' + instrumentName(l);
+        n.textContent = l.notes.length + ' notes · ' + (l.vocals && l.renderedVocalPath ? 'rendered vocal' : instrumentName(l));
         t.append(n);
         const drag = document.createElement('button');
         drag.textContent = '⠿ Drag MIDI';
@@ -928,6 +1114,7 @@ async function importMidiFile(file) {
         importedMidiName: file.name,
         originalBrief: target.originalBrief || ('Imported MIDI clip: ' + file.name)
     });
+    if (target.vocals) { target.renderedVocalPath=''; target.renderedVocalSignature=''; }
     LaneNotation.sync(target,song.tempo,song.meter); LaneNotation.accept(target);
     song.started=true;
     commit();
@@ -976,6 +1163,59 @@ function receive(j) {
         }
         $('connection').textContent = 'Host connected';
         $('connection').className = 'badge online';
+        if (j.op === 'ready') {
+            // Restore the user's song first. Voice-library discovery can scan preview
+            // folders, so defer it until the workspace is visible instead of competing
+            // with startup restoration.
+            send('workspaceList',{},crypto.randomUUID());
+        }
+        break;
+    case 'voiceLibrary':
+    case 'voiceSelected':
+        setVoiceLibrary(p);
+        break;
+    case 'workspaceList':
+        setWorkspaceSongs(p.songs);
+        if (!workspaceBootstrapped) {
+            if (p.lastSongId) {
+                workspaceLoadRequest=crypto.randomUUID();
+                send('workspaceLoad',{id:p.lastSongId},workspaceLoadRequest);
+            } else {
+                workspaceBootstrapped=true;
+                updateSongIdentity();
+                renderSongList();
+                send('voiceLibraryList',{},crypto.randomUUID());
+            }
+        }
+        break;
+    case 'workspaceLoaded':
+        if (j.requestId !== workspaceLoadRequest && workspaceLoadRequest) break;
+        workspaceLoadRequest='';
+        song=normalizeLaneAiDefaults(p.project || fresh());
+        history=Array.isArray(p.history)?p.history:[];
+        workspaceId=p.id || newWorkspaceId();
+        workspaceTitle=normalizedWorkspaceTitle(p.title);
+        workspaceProducerDesign=p.producerDesign || '';
+        workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceSaveRequests.clear();
+        workspaceBootstrapped=true; undo=[]; redo=[]; songRun=null; pending=null;
+        selected=song.lanes[0]?.id || selected;
+        $('brief').value=history.at(-1)?.brief || '';
+        setWorkspaceSongs(p.songs);
+        send('project',song); render(); renderHistory(); renderSongList(); busy();
+        send('voiceLibraryList',{},crypto.randomUUID());
+        status('Loaded ' + workspaceTitle + '.');
+        break;
+    case 'workspaceSaved': { 
+        const ack=workspaceSaveRequests.get(j.requestId); workspaceSaveRequests.delete(j.requestId);
+        if (ack?.historyVersion != null) workspaceHistorySavedVersion=Math.max(workspaceHistorySavedVersion,ack.historyVersion);
+        if (ack?.producerVersion != null) workspaceProducerSavedVersion=Math.max(workspaceProducerSavedVersion,ack.producerVersion);
+        if (p.id === workspaceId) workspaceTitle=normalizedWorkspaceTitle(p.title || workspaceTitle);
+        setWorkspaceSongs(p.songs); updateSongIdentity();
+        break;
+    }
+    case 'workspaceDeleted':
+        setWorkspaceSongs(p.songs);
+        if (p.lastSongId) loadWorkspaceSong(p.lastSongId); else createNewWorkspaceSong(false);
         break;
     case 'disconnected':
         $('connection').textContent = 'Disconnected';
@@ -986,8 +1226,17 @@ function receive(j) {
         busy();
         break;
     case 'status':
-        if (matching)
+        if (matching) {
             status(p.message);
+            if (pending && ['voiceDesignPreview','voiceImportPreview','voiceSavePreview'].includes(pending.kind) && $('voiceDesigner')?.open)
+                $('voicePreviewStatus').textContent = p.message || 'Working…';
+        }
+        break;
+    case 'asrReady':
+        if (recording) status('Listening… Transcription engine ready. Send voice when finished.');
+        break;
+    case 'asrWarmError':
+        if (recording) status('Listening… transcription engine could not warm: ' + (p.message || 'unknown error'));
         break;
     case 'recording':
         recording = p;
@@ -1010,6 +1259,12 @@ function receive(j) {
                 restoreSongGeneration(); pending = null; busy(); status('Producer did not return a usable section list.'); break;
             }
             songRun.state = p.state; songRun.design = p.design || '';
+            if (typeof workspaceProducerDesign !== 'undefined' && p.design && p.design !== workspaceProducerDesign) { workspaceProducerDesign=p.design; workspaceProducerVersion++; }
+            if (typeof workspaceTitle !== 'undefined') {
+                workspaceTitle=songDesignTitle(p,songRun.brief);
+                updateSongIdentity(); renderSongList();
+            }
+            if (typeof scheduleWorkspaceSave === 'function') scheduleWorkspaceSave();
             songRun.sectionIndex = 0; songRun.laneIndex = 0;
             pending = null;
             nextSongChunk();
@@ -1018,7 +1273,7 @@ function receive(j) {
     case 'songChunk':
         if (matching && pending?.kind === 'songChunk') {
             try { applySongChunk(p); }
-            catch (e) { restoreSongGeneration(); pending = null; busy(); status(e.message); }
+            catch (e) { skipFailedSongChunk(e.message); }
         }
         break;
     case 'composition':
@@ -1047,13 +1302,15 @@ function receive(j) {
                 const generatedLength = Math.max(0, ...t.notes.map(n => n.start + n.duration));
                 Object.assign(l, {notation : t.notation, originalBrief : t.originalBrief || before.originalBrief || brief,
                     prompts : [...(before.prompts || []), brief], notes : clone(t.notes), clipLengthBeats : generatedLength});
+                if (l.vocals) { l.renderedVocalPath=''; l.renderedVocalSignature=''; }
             }
             for (const t of tracks) LaneNotation.accept(song.lanes.find(l => l.id === t.laneId));
             song.started = true;
             selected = laneId;
-            history.push({brief, song : clone(song), laneId : selected});
+            history.push({brief, song : clone(song), laneId : selected, createdUtc:new Date().toISOString()});
             if (history.length > 40)
                 history.shift();
+            if (typeof workspaceHistoryVersion !== 'undefined') workspaceHistoryVersion++;
             pending = null;
             commit();
             renderHistory();
@@ -1061,6 +1318,47 @@ function receive(j) {
                 (p.warnings?.length ? ' ' + p.warnings.join(' ') : ''));
             send('play', song);
         }
+        break;
+    case 'vocalsRendered':
+        if (matching && pending?.kind === 'renderVocals') {
+            const target = song.lanes.find(l => l.id === p.laneId);
+            if (!target) { pending=null; busy(); status('Vocal lane no longer exists.'); break; }
+            target.renderedVocalPath = p.wavPath || '';
+            target.voiceId = p.voiceId || target.voiceId || '';
+            target.renderedVocalSignature = vocalSignature(target);
+            if (p.voiceLibrary) setVoiceLibrary(p.voiceLibrary);
+            pending = null;
+            commit();
+            status('Ready. Rendered ' + target.name + (p.qwenModelType ? ' with local Qwen TTS (' + p.qwenModelType + ').' : '.'));
+            send('play', song);
+        }
+        break;
+    case 'voicePreview':
+        if (matching && (pending?.kind === 'voiceDesignPreview' || pending?.kind === 'voiceImportPreview')) {
+            voicePreview = p;
+            pending=null; busy();
+            $('voiceTranscript').value=p.transcript || '';
+            $('voiceOk').disabled=!p.previewId;
+            $('voicePlay').disabled=!p.wav;
+            $('voicePreviewStatus').textContent=(p.source==='imported'?'Imported and transcribed — review the reference text below.':'Voice generated and transcribed — review the reference text below.') + (p.baseOctave>=0 ? ` Base ${midiVoiceNoteName(p.baseMidiNote)} (octave ${p.baseOctave}); singing range ${midiVoiceNoteName(p.singingMinMidiNote)}–${midiVoiceNoteName(p.singingMaxMidiNote)}.` : '') + (p.singingWav?' Singing preview ready.':'');
+            playCurrentVoicePreview();
+        }
+        break;
+    case 'voiceSaved':
+        if (matching && pending?.kind === 'voiceSavePreview') {
+            const savedId=p.savedVoiceId || '';
+            pending=null; setVoiceLibrary(p);
+            if (lane()?.vocals && savedId) lane().voiceId=savedId;
+            voicePreview=null; closeVoiceDesigner(false); commit(); busy();
+            status('Voice saved and selected for ' + (lane()?.name || 'Vocals') + '.');
+        }
+        break;
+    case 'voiceDesignerReady':
+        if ($('voiceDesigner')?.open && !voicePreview && !pending) $('voicePreviewStatus').textContent='VoiceDesign ready.';
+        break;
+    case 'voiceServiceReady':
+    case 'voicePreviewDiscarded':
+    case 'voiceDesignerClosed':
         break;
     case 'midiSaved':
         pending = null;
@@ -1082,6 +1380,8 @@ function receive(j) {
         break;
     case 'cancelled':
         if (matching) {
+            if (pending?.kind === 'songChunk' && skipFailedSongChunk(p.message || 'Song chunk cancelled or timed out.'))
+                break;
             restorePendingWork();
             pending = null;
             if (typeof songRun !== 'undefined') songRun = null;
@@ -1089,15 +1389,42 @@ function receive(j) {
             status(p.message);
         }
         break;
-    case 'error':
-        if (!j.requestId || matching) {
+    case 'error': {
+        // Background library/workspace commands use their own request ids and do not
+        // own the current AI generation. Surface those errors without rolling back or
+        // cancelling unrelated pending work.
+        const message = p.message || j.message || 'An error occurred.';
+        if (typeof workspaceSaveRequests !== 'undefined' && workspaceSaveRequests.has(j.requestId)) workspaceSaveRequests.delete(j.requestId);
+        if (typeof workspaceLoadRequest !== 'undefined' && workspaceLoadRequest && j.requestId === workspaceLoadRequest) {
+            // A stale/corrupt last-song pointer must not leave workspaceBootstrapped=false,
+            // because that would silently disable every later autosave in this session.
+            workspaceLoadRequest='';
+            workspaceBootstrapped=true;
+            updateSongIdentity();
+            renderSongList();
+            send('voiceLibraryList',{},crypto.randomUUID());
+            status(message + ' Started a new local workspace instead.');
+            break;
+        }
+        if (matching) {
+            const failedKind = pending?.kind || '';
+            if (pending?.kind === 'songChunk' && skipFailedSongChunk(message)) break;
             restorePendingWork();
             pending = null;
             if (typeof songRun !== 'undefined') songRun = null;
             busy();
-            status(p.message || j.message || 'An error occurred.');
+            status(message);
+            if (['voiceDesignPreview','voiceImportPreview','voiceSavePreview'].includes(failedKind) && $('voiceDesigner')?.open) {
+                $('voicePreviewStatus').textContent = 'Error: ' + message;
+                $('voicePlay').disabled = !voicePreview?.wav;
+                $('voiceOk').disabled = !voicePreview?.previewId;
+            }
+        } else if (!j.requestId || !pending) {
+            status(message);
+            if (voicePreview === null && $('voiceDesigner')?.open) $('voicePreviewStatus').textContent = message;
         }
         break;
+    }
     }
 }
 window.SAMFD = (tag, size, data) => {
@@ -1119,6 +1446,136 @@ function animate() {
     head.style.left = (seconds * song.tempo / 60 * zoom) + 'px';
     requestAnimationFrame(animate);
 }
+$('vocalLyrics').onchange = () => {
+    if (!lane().vocals) return;
+    checkpoint(); lane().lyrics = $('vocalLyrics').value; changed();
+};
+$('vocalVoice').onchange = () => {
+    if (!lane().vocals) return;
+    const id=$('vocalVoice').value.trim();
+    if (!id) { openVoiceDesigner(); return; }
+    checkpoint(); lane().voiceId=id; changed();
+    send('voiceSelect',{id},crypto.randomUUID());
+    // Warm the saved/reference-voice Qwen server while the user continues editing.
+    send('voiceServiceActivity',{service:'custom-voice'},crypto.randomUUID());
+};
+$('renderVocals').onclick = () => {
+    try {
+        if (pending) return;
+        readFields();
+        const target = lane();
+        if (!target.vocals) throw Error('Select the Vocals lane.');
+        if (!target.notes?.length) throw Error('Create or import a vocal melody first.');
+        const text = $('vocalLyrics').value.trim(), voiceId=$('vocalVoice').value.trim();
+        if (!text) throw Error('Enter lyrics for the vocal lane.');
+        if (!voiceId || !savedVoices.some(v=>v.id===voiceId)) throw Error('Create or select a saved voice first.');
+        target.lyrics = text; target.voiceId = voiceId;
+        LaneNotation.sync(target, song.tempo, song.meter);
+        const id=crypto.randomUUID();
+        pending={id,kind:'renderVocals',laneId:target.id};
+        status('Vocals · Starting local voice render…'); busy();
+        send('voiceServiceActivity',{service:'custom-voice'},crypto.randomUUID());
+        send('renderVocals',{project:clone(song),laneId:target.id,text:target.lyrics,voiceId:target.voiceId},id);
+    } catch(e) { status(e.message); }
+};
+
+function midiVoiceNoteName(note) {
+    if (!Number.isFinite(note) || note < 0 || note > 127) return '?';
+    const names=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    return names[note%12] + (Math.floor(note/12)-1);
+}
+
+function bytesToBase64(bytes) {
+    let out=''; const step=0x8000;
+    for(let i=0;i<bytes.length;i+=step) out+=String.fromCharCode(...bytes.subarray(i,Math.min(bytes.length,i+step)));
+    return btoa(out);
+}
+function openVoiceDesigner() {
+    if (pending) return;
+    voicePreview=null;
+    if (voiceAudio) { try{voiceAudio.pause();}catch{} voiceAudio=null; }
+    $('voiceDesignPrompt').value=''; $('voiceSampleText').value=DEFAULT_VOICE_SAMPLE_TEXT; $('voiceTranscript').value=''; $('voiceName').value='';
+    $('voiceSingingPreview').checked=false; $('voicePreviewStatus').textContent='Loading VoiceDesign…'; $('voicePlay').disabled=true; $('voiceOk').disabled=true;
+    if (previewMelodies.length) setVoiceLibrary({voices:savedVoices,previewMelodies,lastSelectedVoiceId:lane()?.voiceId||''});
+    $('voiceDesigner').showModal();
+    // Opening the window is VoiceDesign activity: start/load qwen-server immediately
+    // and keep it resident until the dialog closes.
+    send('voiceDesignOpen',{},crypto.randomUUID());
+}
+function closeVoiceDesigner(discard=true) {
+    if (voiceAudio) { try{voiceAudio.pause();}catch{} voiceAudio=null; }
+    if (discard && voicePreview?.previewId) send('voiceDiscardPreview',{previewId:voicePreview.previewId},crypto.randomUUID());
+    voicePreview=null;
+    if ($('voiceDesigner').open) $('voiceDesigner').close();
+    send('voiceDesignClose',{},crypto.randomUUID());
+}
+function playCurrentVoicePreview() {
+    if (!voicePreview) return;
+    const b64=$('voiceSingingPreview').checked && voicePreview.singingWav ? voicePreview.singingWav : voicePreview.wav;
+    if (!b64) return;
+    if (voiceAudio) { try{voiceAudio.pause();}catch{} }
+    voiceAudio=new Audio('data:audio/wav;base64,'+b64);
+    voiceAudio.play().catch(()=>{});
+}
+function discardCurrentPreview() {
+    if (voicePreview?.previewId) send('voiceDiscardPreview',{previewId:voicePreview.previewId},crypto.randomUUID());
+    voicePreview=null; $('voiceTranscript').value=''; $('voicePlay').disabled=true; $('voiceOk').disabled=true;
+}
+function requestVoiceDesignPreview() {
+    try {
+        if (pending) return;
+        const description=$('voiceDesignPrompt').value.trim(), sampleText=$('voiceSampleText').value.trim();
+        if (!description) throw Error('Describe how you want the voice to sound.');
+        discardCurrentPreview();
+        const id=crypto.randomUUID(); pending={id,kind:'voiceDesignPreview'}; busy(); $('voicePreviewStatus').textContent='Generating voice…';
+        send('voiceDesignPreview',{description,sampleText,renderSinging:$('voiceSingingPreview').checked,melodyId:$('voicePreviewMelody').value||'fun'},id);
+    } catch(e) { status(e.message); $('voicePreviewStatus').textContent=e.message; }
+}
+async function importVoiceWav(file) {
+    try {
+        if (pending) return;
+        if (!file || !/\.wav$/i.test(file.name)) throw Error('Choose a WAV file.');
+        if (file.size>10*1024*1024) throw Error('Voice WAV must be 10 MiB or smaller.');
+        discardCurrentPreview();
+        const bytes=new Uint8Array(await file.arrayBuffer()), id=crypto.randomUUID();
+        pending={id,kind:'voiceImportPreview'}; busy(); $('voicePreviewStatus').textContent='Importing and transcribing WAV…';
+        send('voiceImportPreview',{wav:bytesToBase64(bytes),renderSinging:$('voiceSingingPreview').checked,melodyId:$('voicePreviewMelody').value||'fun'},id);
+    } catch(e) { status(e.message); $('voicePreviewStatus').textContent=e.message; }
+}
+$('newVoice').onclick=openVoiceDesigner;
+$('voiceGenerate').onclick=requestVoiceDesignPreview;
+$('voicePlay').onclick=playCurrentVoicePreview;
+$('voiceBrowse').onclick=()=>$('voiceWavFile').click();
+$('voiceWavFile').onchange=()=>{ const f=$('voiceWavFile').files?.[0]; if(f) importVoiceWav(f); $('voiceWavFile').value=''; };
+$('voiceDrop').ondragenter=$('voiceDrop').ondragover=e=>{e.preventDefault();e.stopPropagation();$('voiceDrop').classList.add('dragging'); if(e.dataTransfer)e.dataTransfer.dropEffect='copy';};
+$('voiceDrop').ondragleave=e=>{e.preventDefault();e.stopPropagation();$('voiceDrop').classList.remove('dragging');};
+$('voiceDrop').ondrop=e=>{e.preventDefault();e.stopPropagation();$('voiceDrop').classList.remove('dragging'); const f=[...(e.dataTransfer?.files||[])].find(x=>/\.wav$/i.test(x.name)); if(f) importVoiceWav(f);};
+$('voiceCancel').onclick=()=>{
+    if (pending && (pending.kind==='voiceDesignPreview'||pending.kind==='voiceImportPreview'||pending.kind==='voiceSavePreview')) { send('cancel',{},pending.id); pending=null; busy(); }
+    closeVoiceDesigner(true);
+};
+$('voiceOk').onclick=()=>{
+    try {
+        if (pending) return;
+        if (!voicePreview?.previewId) throw Error('Generate or import a voice first.');
+        const name=$('voiceName').value.trim(); if(!name) throw Error('Name the voice before saving it.');
+        const id=crypto.randomUUID(); pending={id,kind:'voiceSavePreview'}; busy(); $('voicePreviewStatus').textContent='Saving reusable voice reference…';
+        const transcript=$('voiceTranscript').value.trim(); if(!transcript) throw Error('Enter the reference transcription before saving.');
+        send('voiceSavePreview',{previewId:voicePreview.previewId,name,transcript},id);
+    } catch(e) { status(e.message); $('voicePreviewStatus').textContent=e.message; }
+};
+$('voiceSingingPreview').onchange=()=>{ if (voicePreview) $('voicePreviewStatus').textContent=$('voiceSingingPreview').checked && !voicePreview.singingWav?'Run Generate/Import again to create the singing preview.':'Preview ready.'; };
+
+$('libraryToggle').onclick=toggleLibraryView;
+$('songTitle').onclick=()=>{ if(pending)return; $('songTitle').contentEditable='true'; $('songTitle').focus(); const r=document.createRange();r.selectNodeContents($('songTitle'));const sel=getSelection();sel.removeAllRanges();sel.addRange(r); };
+$('songTitle').onkeydown=e=>{ if(e.key==='Enter'){e.preventDefault();$('songTitle').blur();} if(e.key==='Escape'){e.preventDefault();$('songTitle').textContent=workspaceTitle;$('songTitle').blur();} };
+$('songTitle').onblur=()=>{ if($('songTitle').contentEditable==='true'){ workspaceTitle=normalizedWorkspaceTitle($('songTitle').textContent); $('songTitle').contentEditable='false'; updateSongIdentity(); renderSongList(); saveWorkspace(true); } };
+$('deleteSong').onclick=()=>{
+    if(pending)return;
+    if(!confirm(`Delete "${workspaceTitle}" from your Resone song library?`)) return;
+    send('workspaceDelete',{id:workspaceId},crypto.randomUUID());
+};
+
 try { $('songMode').checked = localStorage.getItem('resone.songMode') === '1'; } catch { $('songMode').checked = false; }
 $('songMode').onchange = () => { saveSongMode(); render(); };
 render();

@@ -114,7 +114,7 @@ namespace Wds.Resone.Api.Music
                 new ChatMessage("user", composerRequest)
             };
             token.ThrowIfCancellationRequested();
-            string notation = (await _model.CompleteTextStreamingAsync(messages, 8192, "MusicComposition", null, token).ConfigureAwait(false)).Trim();
+            string notation = (await _model.CompleteTextStreamingAsync(messages, "MusicComposition", null, token).ConfigureAwait(false)).Trim();
             token.ThrowIfCancellationRequested();
             IReadOnlyList<string> errors = ResonatorNotationValidator.Validate(notation, request);
             if (errors.Count != 0)

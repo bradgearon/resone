@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <OutputType Condition="$([MSBuild]::IsOSPlatform('Windows'))">WinExe</OutputType>
+    <AssemblyName>wds.resone.updater</AssemblyName>
+    <RootNamespace>Wds.Resone.Updater</RootNamespace>
+    <PublishAot>true</PublishAot>
+    <ApplicationIcon>../wds.resone.ui/resources/Resone.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../wds.resone.api/wds.resone.api.csproj" />
+    <Content Include="../wds.resone.ui/resources/Resone.ico" Link="Resone.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

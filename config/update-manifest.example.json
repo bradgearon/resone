@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "product": "resone",
+  "channel": "stable",
+  "version": "0.2.0",
+  "publishedUtc": "2026-09-19T00:00:00Z",
+  "releaseNotesUrl": "https://resone.io/releases/0.2.0",
+  "artifacts": [
+    {
+      "enabled": true,
+      "id": "resone-win-x64",
+      "kind": "app",
+      "rid": "win-x64",
+      "installMode": "archive",
+      "url": "https://resone.io/downloads/resone-0.2.0-win-x64.zip",
+      "sha256": "REPLACE_WITH_ARCHIVE_SHA256",
+      "maxBytes": 2147483648,
+      "maxExtractedBytes": 4294967296,
+      "stripComponents": 0,
+      "required": true,
+      "autoInstall": true,
+      "requiredFiles": [
+        "wds.resone.launcher.exe",
+        "wds.resone.updater.exe",
+        "wds.resone.ui.exe",
+        "config/runtime.json"
+      ],
+      "files": [
+        { "path": "wds.resone.launcher.exe", "sha256": "REPLACE_WITH_FILE_SHA256" },
+        { "path": "wds.resone.updater.exe", "sha256": "REPLACE_WITH_FILE_SHA256" },
+        { "path": "wds.resone.ui.exe", "sha256": "REPLACE_WITH_FILE_SHA256" },
+        { "path": "config/runtime.json", "sha256": "REPLACE_WITH_FILE_SHA256" }
+      ],
+      "arguments": []
+    },
+    {
+      "enabled": false,
+      "id": "resone-vst3-win-x64",
+      "kind": "vst3",
+      "rid": "win-x64",
+      "installMode": "installer",
+      "url": "https://resone.io/downloads/resone-vst3-0.2.0-win-x64.exe",
+      "sha256": "REPLACE_WITH_INSTALLER_SHA256",
+      "maxBytes": 536870912,
+      "required": false,
+      "autoInstall": true,
+      "requiredFiles": [],
+      "files": [],
+      "arguments": [ "/quiet" ]
+    }
+  ]
+}

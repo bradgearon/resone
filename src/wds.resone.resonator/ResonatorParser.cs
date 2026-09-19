@@ -69,7 +69,7 @@ public sealed partial class ResonatorParser
 
             if (token.StartsWith('['))
             {
-                cursor += ParseChord(token, cursor, composition);
+                cursor += ParseChordTolerant(token, cursor, composition);
                 continue;
             }
 
@@ -102,7 +102,7 @@ public sealed partial class ResonatorParser
                 continue;
             }
 
-            cursor += ParseSingleEvent(token, cursor, composition);
+            cursor += ParseSingleEventTolerant(token, cursor, composition);
         }
 
         composition.NominalLengthTicks = cursor;
@@ -125,14 +125,75 @@ public sealed partial class ResonatorParser
             }
 
             if (token.StartsWith('['))
-                cursor += ParseChord(token, cursor, composition);
+                cursor += ParseChordTolerant(token, cursor, composition);
             else if (token.StartsWith('_'))
                 cursor += DurationTicks(ParseModifiers(token, 1).DurationKind, _profile.Ppq);
             else
-                cursor += ParseSingleEvent(token, cursor, composition);
+                cursor += ParseSingleEventTolerant(token, cursor, composition);
         }
 
         return cursor;
+    }
+
+    // Model-generated notation should be resilient at event granularity. A malformed
+    // pitch must not discard the rest of an otherwise useful lane. Treat an invalid
+    // playable token as a rest of the same nominal duration and surface a warning.
+    private long ParseSingleEventTolerant(string token, long cursor, ResonatorComposition composition)
+    {
+        int eventCount = composition.Events.Count;
+        var previousGroup = _lastSoundingGroup.ToList();
+        try
+        {
+            return ParseSingleEvent(token, cursor, composition);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or FormatException or OverflowException or ResonatorParseException)
+        {
+            if (composition.Events.Count > eventCount)
+                composition.Events.RemoveRange(eventCount, composition.Events.Count - eventCount);
+            _lastSoundingGroup = previousGroup;
+            _warnings.Add($"Skipped invalid event '{token}': {ex.Message}");
+            return BestEffortNominalTicks(token);
+        }
+    }
+
+    private long ParseChordTolerant(string token, long cursor, ResonatorComposition composition)
+    {
+        int eventCount = composition.Events.Count;
+        var previousGroup = _lastSoundingGroup.ToList();
+        var microChannels = new Dictionary<int, long>(_microChannelAvailableAt);
+        try
+        {
+            return ParseChord(token, cursor, composition);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or FormatException or OverflowException or ResonatorParseException)
+        {
+            if (composition.Events.Count > eventCount)
+                composition.Events.RemoveRange(eventCount, composition.Events.Count - eventCount);
+            _lastSoundingGroup = previousGroup;
+            _microChannelAvailableAt.Clear();
+            foreach (var pair in microChannels)
+                _microChannelAvailableAt[pair.Key] = pair.Value;
+            _warnings.Add($"Skipped invalid chord '{token}': {ex.Message}");
+            return BestEffortNominalTicks(token);
+        }
+    }
+
+    private long BestEffortNominalTicks(string token)
+    {
+        try
+        {
+            string candidate = token;
+            if (candidate.StartsWith('['))
+            {
+                int close = candidate.IndexOf(']');
+                candidate = close >= 0 ? "X" + candidate[(close + 1)..] : "X";
+            }
+            return DurationTicks(ParseModifiers(candidate, 1).DurationKind, _profile.Ppq);
+        }
+        catch
+        {
+            return _profile.Ppq;
+        }
     }
 
     private long ParseSingleEvent(string token, long cursor, ResonatorComposition composition)
@@ -332,12 +393,14 @@ public sealed partial class ResonatorParser
 
         int? velocity = dynamic switch
         {
+            "ppp" => 28,
             "pp" => 42,
             "p" => 56,
             "mp" => 72,
             "mf" => 88,
             "f" => 104,
             "ff" => 120,
+            "fff" => 127,
             _ => null
         };
         if (!velocity.HasValue)

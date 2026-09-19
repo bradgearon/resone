@@ -1,48 +1,91 @@
-# Validation — 2026-09-16
+# Validation
 
-## Passed in this workspace
+Validated in this environment:
 
-- Cloudflare Worker handler and SQLite tests: five tests covering purchase issuance, authorization, signed proof, replay protection, single-device activation, release/transfer, expiry, revocation and malformed requests.
-- Actual local Workers runtime / D1 (Miniflare): two simultaneous device activations yielded exactly one successful claim and one conflict.
-- Wrangler deployment dry run completed. No remote Worker or D1 database was created.
-- Editor generation-state regression: selected-lane replacement, context with manually edited notes and prompts, other lanes preserved, autoplay, undo, stale responses, errors and suggestion-button submission.
-- Saved notation regression: received-string retention, manual edit refresh, deletion, chord/rest/overlap/velocity/tick round trips.
-- All five newest instruction files and the logo PNG match the supplied files byte-for-byte. AES-GCM packed instructions round-trip exactly.
-- C# developer and CustomerRelease builds; .NET SDK 9.0.318. Use single-process MSBuild (`-m:1 -nr:false`) in this environment.
-- Linux x64 CustomerRelease NativeAOT publish completed with no warnings/errors on the final publish. Published assets contain no loose instruction files.
-- Executed the published native worker: rejected unauthenticated and browser-Origin WebSocket connections; accepted the bootstrap bearer token; returned ready and valid MIDI for a notation-render request. This used no loose instructions. This was not a real license activation or model inference test.
-- Native inference adapter compiles against the vendored llama.cpp ABI snapshot and dynamically loads a prebuilt engine pack; the Resone build does not clone/build llama.cpp. Shared library loaded, ABI version was 1, and a missing-model request returned an error without crashing.
-- Portable C++ MIDI exporter built and output was parsed: selected lane only, chord simultaneity, manually edited pitches/velocities, fractional beat timing, tempo/meter, and percussion channel 10. Missing lanes rejected.
+- All `.cjs` source/regression tests pass, including song workspaces, async persistence, composer continuity, Whisper warmup/error handling, voice library UI, and the new managed Qwen server lifecycle test.
+- `native-startup-regressions.py`, `song-section-parser-regression.py`, `native-abi-pins.py`, `llama-b9870-loader-regression.py`, and `gemma4-chat-template-regression.py` pass.
+- The Qwen regression verifies `qwen-server.exe`/`tts-server.exe` discovery, `/health`, `/v1/audio/speech`, `/v1/audio/voices`, independent `voice-design`/`custom-voice` service delays, process-tree termination, dialog pinning, and pinned server staging.
+- The pinned a8a7716 server contract is checked for the `instructions` VoiceDesign request field and server tuning flags.
 
-## Not validated here
+Not executable in this environment:
 
-Windows iPlug2 compilation, application/tray appearance, CNG/DPAPI device activation, multiple live VST instances, Windows OLE MIDI drag into DAWs, microphone/TTS engines, download packs on clean customer systems, GPU runtime compatibility, and actual generation with the user's GGUF model. No Windows DAW or model was available. Platform-specific macOS/Linux UI, tray, secure key storage and drag/drop still require implementation before those desktop releases.
+- Windows/.NET 9/MSVC/CUDA build and live qwen-server model smoke test (toolchain/runtime binaries are not installed here).
+- `tests/integration.py` without a built launcher/API path.
+- Playwright editor test because the Chromium test binary is not installed.
+## Vocal pitch-sync validation — 2026-09-18
 
-The source is prepared for integration and target-machine validation; this archive is not a tested customer installer. The focused changes are relative to the recovered saved baseline, not the live Windows checkout.
-
-## Reproduce key checks
-
-```sh
-cd cloud/licensing
-npm ci
-npm test
-npm run test:integration
-npx wrangler deploy --dry-run
-```
-
-From the solution root:
-
-```sh
-node tests/generation-state.cjs
-node tests/lane-notation.cjs
-node tests/instruction-bundle.mjs
-```
-
-Follow `RELEASE-UPDATE.md` for Windows/customer build prerequisites. Test credentials used during validation were ephemeral and are not included.
+- Native vocals C++ compiled successfully with the revised pitch-synchronous grain tracker.
+- Synthetic drifting-F0 input rendered to C4 at ~262.3 Hz and E4 at ~328.8 Hz (targets 261.63/329.63 Hz).
+- All available `.cjs` regression tests passed.
+- `native-startup-regressions.py`, `song-section-parser-regression.py`, `native-abi-pins.py`, `llama-b9870-loader-regression.py`, `gemma4-chat-template-regression.py`, and `vocal-word-span-regression.py` passed.
+- Windows/.NET/CUDA end-to-end execution was not available in this Linux validation environment.
 
 
-## 2026-09-17 native startup diagnostics / DLL search
-- Development runs prefer FluidSynth from the vcpkg bin directory so its transitive DLLs are co-located.
-- Dynamic native loading explicitly searches the target DLL directory plus configured dependency directories.
-- FluidSynth startup writes `logs/native-audio.log` with the resolved runtime root, DLL path, and loader error.
-- The worker now creates an always-on `logs/startup-*.log` before local llama.cpp initialization and records engine/bridge/model resolution, GPU attempt, CPU fallback, and the exact native error if startup fails. No prompts or model output are written to this startup log.
+
+## Qwen settings compatibility
+
+- Verified `ResoneSettings` defines `QwenTtsExpectedVersionPrefix` and `QwenTtsLibraryName` for legacy compile compatibility.
+- Verified the active Windows settings migration copies server-manager fields and no longer copies stale `qwenTtsMode`/DLL-loader fields.
+
+## Consonant continuity validation — 2026-09-18
+
+- Native vocals library compiles successfully with g++/C++17 in the validation environment.
+- `tests/vocal-word-span-regression.py` verifies consonant-safe internal boundaries, tapered consonant-to-vowel joins, phrase continuity, pitch-synchronous F0 correction, formant handling, and male pitch floor.
+- Full available JavaScript regression suite passes.
+- Native ABI/startup and Python source regressions pass.
+- The supplied 2026-09-18 16:01 recording was inspected as PCM; the reported joins correspond to narrow transient spikes and brief energy collapses, matching the abrupt onset/body handoff fixed here.
+
+
+## Voice register analysis and octave folding
+
+- Generated and imported voice references are analyzed once for median/base F0, base MIDI note/octave, voiced pitch spread, and a conservative two-octave singing register.
+- The default singing register is C through B of the detected base octave plus the octave above it (for example, base octave 2 => C2-B3).
+- Vocal melody notes outside the stored register are moved only by whole octaves before pitch correction, preserving pitch class while avoiding extreme voice shifts.
+- Existing saved voices without profile metadata are analyzed lazily on first vocal render and the profile is persisted.
+- The voice designer reports the detected base note/octave and singing range after generation/import.
+
+## Vocal consonant/register/CLI validation
+
+- Native C++ vocal DLL compiled successfully with C++20 after the speech-piece refactor.
+- Synthetic register test: a reference whose median would fall in octave 4 now anchors at MIDI 59 / octave 3 with C3-B4 singing range.
+- Synthetic `happy` test retained distinct high-derivative consonant/transient regions at both the initial consonant and the internal plosive between two pitched vowel regions.
+- All `tests/*.cjs` regressions passed from repository root.
+- `vocal-word-span-regression.py`, `native-startup-regressions.py`, and `native-abi-pins.py` passed.
+- The container does not provide the Windows .NET/MSVC runtime, so DirectSound playback and the final Windows CLI executable remain Windows-side smoke tests.
+
+## Phoneme-aware vocals validation
+- `tests/vocal-phoneme-planner-regression.py` verifies text-guided vowel nuclei, transient/sustainable consonant classes, mixed consonant-run splitting, smooth pitch glides, phrase dynamics, and both native build targets.
+- `tests/vocal-word-span-regression.py` now verifies the phoneme-aware renderer rather than the old voiced/consonant binary model.
+- Native standalone CMake build passes with `resone_vocals.cpp` + `resone_vocal_phonetics.cpp`.
+- Functional synthetic `happy birthday` render passed with distinct h / pp / b / th / d source regions and continuous output energy through the four-note phrase.
+
+## Vocal smoothing/register validation (2026-09-18)
+
+- Standalone native vocals target builds successfully with the revised phonetic module.
+- Synthetic register analysis: 110 Hz male reference remains octave 2 / C2-B3; 294 Hz female reference is recalibrated to octave 3 / C3-B4.
+- Synthetic `happy birthday` render retains consonant energy and passes the phoneme-aware functional render test.
+- On the same synthetic stress case, large sample-to-sample discontinuities (>0.12 normalized amplitude) dropped from 385 to 189 after the smoothing changes.
+- Source-level vocal phoneme, register, word-span, song/workspace, Qwen/Whisper, native ABI/startup, persistence, MIDI, and CLI regressions pass.
+
+## Single-consumption consonant + title validation (2026-09-18)
+
+- Standalone native vocal target compiles successfully with `resone_vocals.cpp`, `resone_vocal_phonetics.cpp`, and the new `resone_vocal_articulation.cpp` module.
+- Synthetic `happy birthday` functional render completes successfully with 96/99 20 ms windows active across the four-note test phrase, retaining the articulation improvements after the non-looping consonant change.
+- `vocal-phoneme-planner-regression.py` verifies separate noise/voiced sustainable classes, mixed/transient single-consumption handling, the monotonic consonant stretcher, and both native build targets.
+- `vocal-word-span-regression.py` and `vocal-register-range-regression.py` pass, preserving pitch-synchronous singing and octave folding.
+- All `.cjs` source/regression tests pass after updating the song-mode harness for the title lifecycle.
+- `song-title-regression.cjs` verifies immediate provisional titles, robust producer-title replacement, rejection of generic placeholders, and repair of existing Untitled workspace metadata.
+- Browser/Windows built-launcher integration remains environment-dependent as documented above.
+
+## Vocal glide/rhotic/aspirate validation
+- Native standalone vocal target builds successfully with the shared app sources.
+- Planner spot-check: `happy` => aspirate h + two nuclei; `birthday` => rhotic `ir` + final `ay` off-glide; `you` => voiced y-glide + one vowel nucleus; `day` => final off-glide.
+- Full available Python/CJS regression suite passes, including word-span, register-range, song/workspace/title, voice-library, Qwen/Whisper, async persistence, and native ABI/startup checks.
+
+## Glide/rhotic + live-launcher validation
+
+- Native vocal renderer compiled successfully with `resone_vocals.cpp`, `resone_vocal_phonetics.cpp`, and `resone_vocal_articulation.cpp`.
+- `vocal-glide-rhotic-regression.py` passes and verifies glide carving, non-PSOLA glide rendering, stronger aspirate handling, and text-side y/w/r classification.
+- `build-launcher-live-regression.py` passes and verifies automatic build-only behavior while the launcher is running.
+- Full non-browser Python and CJS regression suites pass.
+- Playwright UI validation was not runnable in this environment because the Chromium binary is not installed.

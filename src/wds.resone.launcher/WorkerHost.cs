@@ -73,6 +73,10 @@ using var http = new HttpClient
     Timeout = Timeout.InfiniteTimeSpan
 };
 var licensing = new LicenseService(root,http);
+var workspaceStore = new SongWorkspaceStore();
+await using var ttsManager = new Wds.Resone.Api.VocalSinging.QwenTtsServiceManager(settings, root, http);
+await using var speechService = new SpeechService(http, settings, ttsManager);
+var voiceService = new Lazy<Wds.Resone.Api.VocalSinging.VoiceService>(() => new Wds.Resone.Api.VocalSinging.VoiceService(http, settings, speechService, ttsManager));
 var builder = WebApplication.CreateSlimBuilder(args.Where(a => !a.StartsWith("--no-")).ToArray());
 builder.WebHost.UseUrls("http://127.0.0.1:8078");
 var app = builder.Build();
@@ -120,6 +124,80 @@ app.Map("/ws", async context =>
             ws.Abort();
         }
     });
+
+    // Keep local persistence/library traffic off the WebSocket receive loop. Requests are
+    // queued in arrival order so Save -> Load ordering remains deterministic, but disk I/O
+    // can await without preventing cancel/generation/transport messages from being read.
+    var localRequests = Channel.CreateUnbounded<Envelope>(new UnboundedChannelOptions
+    {
+        SingleReader = true,
+        SingleWriter = true,
+        AllowSynchronousContinuations = false
+    });
+    var localWorker = Task.Run(async () =>
+    {
+        try
+        {
+            await foreach (var request in localRequests.Reader.ReadAllAsync(stop.Token))
+            {
+                try
+                {
+                    switch (request.Op)
+                    {
+                        case "workspaceList":
+                            await Send("workspaceList", request.RequestId, await workspaceStore.ListPayloadAsync(stop.Token));
+                            break;
+                        case "workspaceLoad":
+                            await Send("workspaceLoaded", request.RequestId, await workspaceStore.LoadPayloadAsync(request.Payload.GetProperty("id").GetString() ?? "", stop.Token));
+                            break;
+                        case "workspaceSave":
+                            await Send("workspaceSaved", request.RequestId, await workspaceStore.SaveAsync(request.Payload, stop.Token));
+                            break;
+                        case "workspaceDelete":
+                            await Send("workspaceDeleted", request.RequestId, await workspaceStore.DeleteAsync(request.Payload.GetProperty("id").GetString() ?? "", stop.Token));
+                            break;
+                        case "voiceLibraryList":
+                            await Send("voiceLibrary", request.RequestId, await Task.Run(() => voiceService.Value.Library(), stop.Token));
+                            break;
+                        case "voiceSelect":
+                            await voiceService.Value.SelectVoiceAsync(request.Payload.GetProperty("id").GetString() ?? "", stop.Token);
+                            await Send("voiceSelected", request.RequestId, await Task.Run(() => voiceService.Value.Library(), stop.Token));
+                            break;
+                        case "voiceDiscardPreview":
+                            await Task.Run(() => voiceService.Value.DiscardPreview(request.Payload.GetProperty("previewId").GetString() ?? ""), stop.Token);
+                            await Send("voicePreviewDiscarded", request.RequestId, new JsonObject());
+                            break;
+                        case "voiceDesignOpen":
+                            await voiceService.Value.SetDesignerOpenAsync(true, stop.Token, message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
+                            await Send("voiceDesignerReady", request.RequestId, new JsonObject());
+                            break;
+                        case "voiceDesignClose":
+                            await voiceService.Value.SetDesignerOpenAsync(false, stop.Token);
+                            await Send("voiceDesignerClosed", request.RequestId, new JsonObject());
+                            break;
+                        case "voiceServiceActivity":
+                            string service = request.Payload.TryGetProperty("service", out var serviceValue) ? serviceValue.GetString() ?? "" : "";
+                            var kind = service.Equals("voice-design", StringComparison.OrdinalIgnoreCase)
+                                ? Wds.Resone.Api.VocalSinging.QwenTtsServiceKind.VoiceDesign
+                                : service.Equals("custom-voice", StringComparison.OrdinalIgnoreCase)
+                                    ? Wds.Resone.Api.VocalSinging.QwenTtsServiceKind.CustomVoice
+                                    : throw new ArgumentException("Unknown voice service activity type: " + service);
+                            await ttsManager.ActivityAsync(kind, stop.Token, message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
+                            await Send("voiceServiceReady", request.RequestId, new JsonObject { ["service"] = service });
+                            break;
+                    }
+                }
+                catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+                catch (Exception e)
+                {
+                    trace.Write("local-request-failed", request.RequestId, e.ToString());
+                    await Send("error", request.RequestId, new JsonObject { ["message"] = e.Message });
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+    });
+
     CancellationTokenSource? jobStop = null;
     Task job = Task.CompletedTask;
     try
@@ -150,6 +228,36 @@ app.Map("/ws", async context =>
                 continue;
             }
 
+            // ASR warmup is deliberately independent of the foreground generation slot. The
+            // microphone is already recording in the native editor while this loads whisper.cpp.
+            if (request.Op == "asrWarm")
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        string detail = await speechService.WarmTranscriptionAsync(stop.Token);
+                        trace.Write("asr-warm-ready", request.RequestId, detail);
+                        await Send("asrReady", request.RequestId, new JsonObject { ["message"] = "Transcription engine ready." });
+                    }
+                    catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+                    catch (Exception e)
+                    {
+                        trace.Write("asr-warm-failed", request.RequestId, e.ToString());
+                        await Send("asrWarmError", request.RequestId, new JsonObject { ["message"] = e.Message });
+                    }
+                });
+                continue;
+            }
+
+            bool localLibraryOp = request.Op is "workspaceList" or "workspaceLoad" or "workspaceSave" or "workspaceDelete"
+                or "voiceLibraryList" or "voiceSelect" or "voiceDiscardPreview" or "voiceDesignOpen" or "voiceDesignClose" or "voiceServiceActivity";
+            if (localLibraryOp)
+            {
+                await localRequests.Writer.WriteAsync(request, stop.Token);
+                continue;
+            }
+
             if (!job.IsCompleted)
             {
                 await Send("error", request.RequestId, new JsonObject { ["message"] = "A request is running. Cancel it first." });
@@ -175,7 +283,7 @@ app.Map("/ws", async context =>
                         case "compose":
                             await licensing.EnsureAsync(token);
                             trace.Write("compose-start", request.RequestId);
-                            var result = await new ForgeEngine(settings, Path.Combine(root, "assets"), http).ComposeAsync(
+                            var result = await new ForgeEngine(settings, Path.Combine(root, "assets"), http, ttsManager).ComposeAsync(
                                 request.Payload,
                                 token,
                                 message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
@@ -185,7 +293,7 @@ app.Map("/ws", async context =>
                         case "songDesign":
                             await licensing.EnsureAsync(token);
                             trace.Write("song-design-start", request.RequestId);
-                            var songDesign = await new ForgeEngine(settings, Path.Combine(root, "assets"), http).DesignSongAsync(
+                            var songDesign = await new ForgeEngine(settings, Path.Combine(root, "assets"), http, ttsManager).DesignSongAsync(
                                 request.Payload, token,
                                 message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
                             token.ThrowIfCancellationRequested();
@@ -194,22 +302,55 @@ app.Map("/ws", async context =>
                         case "songChunk":
                             await licensing.EnsureAsync(token);
                             trace.Write("song-chunk-start", request.RequestId);
-                            var songChunk = await new ForgeEngine(settings, Path.Combine(root, "assets"), http).ComposeSongChunkAsync(
+                            var songChunk = await new ForgeEngine(settings, Path.Combine(root, "assets"), http, ttsManager).ComposeSongChunkAsync(
                                 request.Payload, token,
                                 message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
                             token.ThrowIfCancellationRequested();
                             await Send("songChunk", request.RequestId, songChunk);
                             break;
+                        case "voiceDesignPreview":
+                            await licensing.EnsureAsync(token);
+                            trace.Write("voice-design-preview", request.RequestId);
+                            var voiceDesignPreview = await voiceService.Value.DesignPreviewAsync(
+                                request.Payload, token, message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
+                            token.ThrowIfCancellationRequested();
+                            await Send("voicePreview", request.RequestId, voiceDesignPreview);
+                            break;
+                        case "voiceImportPreview":
+                            await licensing.EnsureAsync(token);
+                            trace.Write("voice-import-preview", request.RequestId);
+                            var voiceImportPreview = await voiceService.Value.ImportPreviewAsync(
+                                request.Payload, token, message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
+                            token.ThrowIfCancellationRequested();
+                            await Send("voicePreview", request.RequestId, voiceImportPreview);
+                            break;
+                        case "voiceSavePreview":
+                            await licensing.EnsureAsync(token);
+                            trace.Write("voice-save-preview", request.RequestId);
+                            var savedVoice = await voiceService.Value.SavePreviewAsync(
+                                request.Payload, token, message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
+                            token.ThrowIfCancellationRequested();
+                            await Send("voiceSaved", request.RequestId, savedVoice);
+                            break;
+                        case "renderVocals":
+                            await licensing.EnsureAsync(token);
+                            trace.Write("vocal-render-start", request.RequestId);
+                            var vocal = await new ForgeEngine(settings, Path.Combine(root, "assets"), http, ttsManager).RenderVocalsAsync(
+                                request.Payload, token,
+                                message => Send("status", request.RequestId, new JsonObject { ["message"] = message }));
+                            token.ThrowIfCancellationRequested();
+                            await Send("vocalsRendered", request.RequestId, vocal);
+                            break;
                         case "transcribe":
                             await licensing.EnsureAsync(token);
-                            string text = await new SpeechService(http, settings).TranscribeAsync(Convert.FromBase64String(request.Payload.GetProperty("wav").GetString()!), token);
+                            string text = await speechService.TranscribeAsync(Convert.FromBase64String(request.Payload.GetProperty("wav").GetString()!), token);
                             token.ThrowIfCancellationRequested();
                             await Send("transcript", request.RequestId, new JsonObject { ["text"] = text });
                             break;
                         case "speak":
                             await licensing.EnsureAsync(token);
                             int sequence = 0;
-                            await new SpeechService(http, settings).SpeakAsync(request.Payload.GetProperty("text").GetString()!, bytes => Send("speechChunk", request.RequestId, new JsonObject { ["sequence"] = sequence++, ["sampleRate"] = 24000, ["pcm"] = Convert.ToBase64String(bytes) }), token);
+                            await speechService.SpeakAsync(request.Payload.GetProperty("text").GetString()!, bytes => Send("speechChunk", request.RequestId, new JsonObject { ["sequence"] = sequence++, ["sampleRate"] = 24000, ["pcm"] = Convert.ToBase64String(bytes) }), token);
                             await Send("speechEnd", request.RequestId, new JsonObject { ["sequence"] = sequence });
                             break;
                         case "export":
@@ -264,6 +405,8 @@ app.Map("/ws", async context =>
         }
 
         jobStop?.Dispose();
+        localRequests.Writer.TryComplete();
+        try { await localWorker; } catch { }
         outgoing.Writer.TryComplete();
         await writer;
     }

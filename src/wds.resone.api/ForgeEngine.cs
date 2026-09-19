@@ -1,12 +1,15 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
+using System.Text;
+using Wds.Resone.Api.VocalSinging;
 using Wds.Resone.Api.Ai;
 using Wds.Resone.Api.Music;
 using Wds.Resone.Resonator;
 
 namespace Wds.Resone.Api;
 /// <summary>Composition root: music AI -> validated notation -> Resonator -> explicit note timeline.</summary>
-public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, HttpClient http)
+public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, HttpClient http, QwenTtsServiceManager? ttsManager = null)
 {
     public async Task<JsonObject> ComposeAsync(JsonElement payload, CancellationToken token, Func<string, Task>? progress = null)
     {
@@ -39,6 +42,7 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
         return new JsonObject
         {
             ["design"] = design,
+            ["title"] = state.Title,
             ["state"] = JsonSerializer.SerializeToNode(state, ResoneJson.Default.SongGenerationState)
         };
     }
@@ -71,6 +75,118 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
         SongGenerationProvisioner.ApplyChunkNotes(state, sectionId, lane.Name, memory);
         result["songState"] = JsonSerializer.SerializeToNode(state, ResoneJson.Default.SongGenerationState);
         return result;
+    }
+
+    public async Task<JsonObject> RenderVocalsAsync(JsonElement payload, CancellationToken token, Func<string, Task>? progress = null)
+    {
+        var project = payload.GetProperty("project").Deserialize(ResoneJson.Default.SongProject)
+            ?? throw new ArgumentException("Missing project.");
+        ValidateProject(project);
+        string laneId = payload.GetProperty("laneId").GetString() ?? "";
+        var lane = project.Lanes.SingleOrDefault(l => l.Id == laneId)
+            ?? throw new ArgumentException("Select a vocals lane to render.");
+        if (!lane.Vocals || lane.Drums)
+            throw new ArgumentException("The selected lane is not a vocals lane.");
+        if (lane.Notes.Count == 0)
+            throw new ArgumentException("Create or import a vocal melody before rendering singing.");
+
+        string text = payload.TryGetProperty("text", out var textValue) ? textValue.GetString() ?? "" : lane.Lyrics;
+        string voiceId = payload.TryGetProperty("voiceId", out var voiceValue) ? voiceValue.GetString() ?? "default" : lane.VoiceId;
+        text = text.Trim();
+        voiceId = string.IsNullOrWhiteSpace(voiceId) ? "default" : voiceId.Trim();
+        if (text.Length is < 1 or > 12000)
+            throw new ArgumentException("Enter 1–12000 characters of lyrics/text for the vocal lane.");
+
+        static string UserVocalDirectory()
+        {
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string path = Path.Combine(local, "Wds", "Resone", "user", "vocals");
+            Directory.CreateDirectory(path);
+            return path;
+        }
+        static string LaneFileKey(string id)
+            => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id))).Substring(0, 20).ToLowerInvariant();
+
+        string temp = Path.Combine(Path.GetTempPath(), "Resone", "vocals", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+        string speech = Path.Combine(temp, "speech.wav");
+        string midiPath = Path.Combine(temp, "vocal.mid");
+        string finalPath = Path.Combine(UserVocalDirectory(), LaneFileKey(lane.Id) + ".wav");
+        try
+        {
+            if (progress is not null) await progress("Vocals · Preparing vocal MIDI…").ConfigureAwait(false);
+            await File.WriteAllBytesAsync(midiPath, ExportLane(project, lane.Id), token).ConfigureAwait(false);
+
+            var voiceStore = new VoiceLibraryStore();
+            var savedVoice = voiceStore.Get(voiceId);
+            string referenceWav = voiceStore.SamplePath(savedVoice);
+            if (savedVoice.PitchProfile?.IsValid != true)
+            {
+                if (progress is not null) await progress($"Vocals · Analyzing {savedVoice.Name}'s natural singing register…").ConfigureAwait(false);
+                var voiceForAnalysis = savedVoice;
+                savedVoice = await Task.Run(() => voiceStore.EnsurePitchProfile(voiceForAnalysis), token).ConfigureAwait(false);
+            }
+            if (ttsManager is null) throw new InvalidOperationException("The managed Qwen TTS service is not available.");
+            if (progress is not null) await progress($"Vocals · Generating a connected source vocal phrase ({savedVoice.Name})…").ConfigureAwait(false);
+            string sourceSpeechText = VocalSingingEngine.PrepareSourceSpeechText(text);
+            await ttsManager.SynthesizeSavedVoiceWavAsync(sourceSpeechText, savedVoice, referenceWav, speech, token, progress).ConfigureAwait(false);
+            voiceStore.Select(savedVoice.Id);
+
+            IReadOnlyList<VocalGuidanceEvent> guidance = lane.VocalGuidance.Count > 0
+                ? lane.VocalGuidance
+                : DefaultVocalGuidance(lane, project.Tempo);
+            if (progress is not null) await progress("Vocals · Shaping speech into singing…").ConfigureAwait(false);
+            await new VocalSingingEngine().RenderAsync(new VocalSingingRequest
+            {
+                InputSpeechWavPath = speech,
+                SpeechText = text,
+                VocalMidiPath = midiPath,
+                OutputSingingWavPath = finalPath,
+                Guidance = guidance,
+                Options = VocalSingingEngine.OptionsForVoice(savedVoice.PitchProfile)
+            }, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            if (progress is not null) await progress("Vocals · Singing ready.").ConfigureAwait(false);
+
+            return new JsonObject
+            {
+                ["laneId"] = lane.Id,
+                ["wavPath"] = finalPath,
+                ["voiceId"] = savedVoice.Id,
+                ["voiceName"] = savedVoice.Name,
+                ["guidanceCount"] = guidance.Count,
+                ["qwenModelType"] = "server/reference-clone",
+                ["voiceLibrary"] = voiceStore.ToPayload()
+            };
+        }
+        finally
+        {
+            try { if (Directory.Exists(temp)) Directory.Delete(temp, true); } catch { }
+        }
+    }
+
+    private static IReadOnlyList<VocalGuidanceEvent> DefaultVocalGuidance(Lane lane, int tempo)
+    {
+        double secondsPerBeat = 60.0 / tempo;
+        var notes = lane.Notes.OrderBy(n => n.Start).ThenBy(n => n.Pitch).ToArray();
+        var output = new List<VocalGuidanceEvent>(notes.Length);
+        for (int i = 0; i < notes.Length; i++)
+        {
+            var n = notes[i];
+            float accent = Math.Clamp((n.Velocity - 96) / 88f, -.35f, .55f);
+            output.Add(new VocalGuidanceEvent
+            {
+                TimeSeconds = n.Start * secondsPerBeat,
+                DurationSeconds = n.Duration * secondsPerBeat,
+                Accent = accent,
+                SlideSeconds = i == 0 ? 0f : .12f,
+                MelodyInfluence = 1f,
+                RhythmInfluence = 1f,
+                VowelHold = 1.25f,
+                ConsonantDrive = .7f
+            });
+        }
+        return output;
     }
 
     public static byte[] ExportLane(SongProject project, string laneId)
@@ -158,8 +274,16 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
         foreach (var l in p.Lanes)
         {
             if (l.Program is < 0 or > 127 || l.Bank is < 0 or > 128 || !double.IsFinite(l.Volume) || l.Volume is < 0 or > 1 || l.Notes.Count > 8192 ||
-                !double.IsFinite(l.ClipLengthBeats) || l.ClipLengthBeats < 0 || l.ClipLengthBeats > 4096)
+                !double.IsFinite(l.ClipLengthBeats) || l.ClipLengthBeats < 0 || l.ClipLengthBeats > 4096 || l.Drums && l.Vocals ||
+                l.Lyrics.Length > 12000 || l.VoiceId.Length > 256 || l.RenderedVocalPath.Length > 4096 || l.VocalGuidance.Count > 8192)
                 throw new ArgumentException("Invalid lane.");
+            foreach (var g in l.VocalGuidance)
+                if (!double.IsFinite(g.TimeSeconds) || g.TimeSeconds < 0 || g.TimeSeconds > 86400 ||
+                    g.DurationSeconds is double gd && (!double.IsFinite(gd) || gd <= 0 || gd > 86400) ||
+                    !float.IsFinite(g.Accent) || !float.IsFinite(g.SlideSeconds) || !float.IsFinite(g.MelodyInfluence) ||
+                    !float.IsFinite(g.RhythmInfluence) || !float.IsFinite(g.VowelHold) || !float.IsFinite(g.ConsonantDrive) ||
+                    !float.IsFinite(g.PitchOffsetSemitones))
+                    throw new ArgumentException("Invalid vocal guidance event.");
             foreach (var n in l.Notes)
                 if (!double.IsFinite(n.Start) || !double.IsFinite(n.Duration) || n.Start < 0 || n.Duration <= 0 || n.Start + n.Duration > 4096 || n.Pitch is < 0 or > 127 || n.Velocity is < 1 or > 127)
                     throw new ArgumentException("Invalid note.");

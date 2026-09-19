@@ -1,14 +1,13 @@
 #pragma once
 
-// Resone's pinned llama.cpp C-ABI declarations.
+// Exact minimal C-ABI mirror for llama.cpp release b9870
+// ABI snapshot: llama.cpp commit 2d973636e292ee6f75fadcf08d29cb33511f509f.
 //
-// This is intentionally NOT a llama.cpp source checkout. Resone only needs the
-// public ABI layout/signatures used by the tiny dynamic loader bridge. The
-// actual llama.cpp implementation is supplied at runtime as a prebuilt engine
-// pack (llama.dll / libllama.* plus GGML backend libraries).
-//
-// ABI snapshot: llama.cpp commit c6824a9e42ceeda5d58089fa274ddd816e59e68e
-// Keep runtime packs compatible with this ABI when updating them.
+// Resone does not build or link llama.cpp. The actual implementation is the
+// user's prebuilt runtime pack (llama.dll/libllama + GGML backends). This file
+// intentionally mirrors only the public b9870 declarations/layouts Resone uses.
+// When the engine pack changes release, update this ABI snapshot at the same
+// time. Do not copy struct layouts from llama.cpp master.
 
 #include <cstddef>
 #include <cstdint>
@@ -22,13 +21,12 @@ struct llama_sampler;
 struct llama_memory_i;
 struct ggml_tensor;
 
-typedef llama_memory_i * llama_memory_t;
+typedef struct llama_memory_i * llama_memory_t;
 typedef int32_t llama_pos;
 typedef int32_t llama_token;
 typedef int32_t llama_seq_id;
 
-// Opaque GGML pointer aliases. Only pointer size/layout matters to the parameter
-// structs below; Resone never dereferences these objects.
+// Opaque GGML handles. Only pointer size matters for the b9870 public structs.
 typedef void * ggml_backend_dev_t;
 typedef void * ggml_backend_buffer_type_t;
 
@@ -47,8 +45,6 @@ enum ggml_log_level : int {
 
 using ggml_abort_callback = bool (*)(void * data);
 using ggml_log_callback = void (*)(enum ggml_log_level level, const char * text, void * user_data);
-// The bridge never calls/sets this callback directly; it only preserves the
-// field returned by llama_context_default_params().
 using ggml_backend_sched_eval_callback = bool (*)(struct ggml_tensor * t, bool ask, void * user_data);
 
 enum llama_rope_scaling_type : int {
@@ -63,60 +59,45 @@ enum llama_pooling_type : int {
     LLAMA_POOLING_TYPE_UNSPECIFIED = -1,
     LLAMA_POOLING_TYPE_NONE = 0,
     LLAMA_POOLING_TYPE_MEAN = 1,
-    LLAMA_POOLING_TYPE_CLS = 2,
+    LLAMA_POOLING_TYPE_CLS  = 2,
     LLAMA_POOLING_TYPE_LAST = 3,
     LLAMA_POOLING_TYPE_RANK = 4,
 };
 
 enum llama_attention_type : int {
     LLAMA_ATTENTION_TYPE_UNSPECIFIED = -1,
-    LLAMA_ATTENTION_TYPE_CAUSAL = 0,
-    LLAMA_ATTENTION_TYPE_NON_CAUSAL = 1,
+    LLAMA_ATTENTION_TYPE_CAUSAL      = 0,
+    LLAMA_ATTENTION_TYPE_NON_CAUSAL  = 1,
 };
 
 enum llama_flash_attn_type : int {
-    LLAMA_FLASH_ATTN_TYPE_AUTO = -1,
+    LLAMA_FLASH_ATTN_TYPE_AUTO     = -1,
     LLAMA_FLASH_ATTN_TYPE_DISABLED = 0,
-    LLAMA_FLASH_ATTN_TYPE_ENABLED = 1,
+    LLAMA_FLASH_ATTN_TYPE_ENABLED  = 1,
 };
 
 enum llama_split_mode : int {
-    LLAMA_SPLIT_MODE_NONE = 0,
-    LLAMA_SPLIT_MODE_LAYER = 1,
-    LLAMA_SPLIT_MODE_ROW = 2,
+    LLAMA_SPLIT_MODE_NONE   = 0,
+    LLAMA_SPLIT_MODE_LAYER  = 1,
+    LLAMA_SPLIT_MODE_ROW    = 2,
     LLAMA_SPLIT_MODE_TENSOR = 3,
-};
-
-enum llama_load_mode : int {
-    LLAMA_LOAD_MODE_AUTO = -1,
-    LLAMA_LOAD_MODE_NONE = 0,
-    LLAMA_LOAD_MODE_MMAP = 1,
-    LLAMA_LOAD_MODE_MLOCK = 2,
-    LLAMA_LOAD_MODE_MMAP_MLOCK = 3,
-    LLAMA_LOAD_MODE_DIRECT_IO = 4,
-};
-
-enum llama_lazy_mode : int {
-    LLAMA_LAZY_MODE_OFF = 0,
-    LLAMA_LAZY_MODE_AUTO = 1,
-    LLAMA_LAZY_MODE_ON = 2,
 };
 
 enum llama_context_type : int {
     LLAMA_CONTEXT_TYPE_DEFAULT = 0,
-    LLAMA_CONTEXT_TYPE_MTP = 1,
+    LLAMA_CONTEXT_TYPE_MTP     = 1,
 };
 
 using llama_progress_callback = bool (*)(float progress, void * user_data);
 
 struct llama_batch {
     int32_t n_tokens;
-    llama_token * token;
-    float * embd;
-    llama_pos * pos;
-    int32_t * n_seq_id;
+    llama_token  * token;
+    float        * embd;
+    llama_pos    * pos;
+    int32_t      * n_seq_id;
     llama_seq_id ** seq_id;
-    int8_t * logits;
+    int8_t       * logits;
 };
 
 enum llama_model_kv_override_type : int {
@@ -131,9 +112,9 @@ struct llama_model_kv_override {
     char key[128];
     union {
         int64_t val_i64;
-        double val_f64;
-        bool val_bool;
-        char val_str[128];
+        double  val_f64;
+        bool    val_bool;
+        char    val_str[128];
     };
 };
 
@@ -142,24 +123,25 @@ struct llama_model_tensor_buft_override {
     ggml_backend_buffer_type_t buft;
 };
 
+// Layout copied from include/llama.h at b9870.
 struct llama_model_params {
     ggml_backend_dev_t * devices;
     const struct llama_model_tensor_buft_override * tensor_buft_overrides;
     int32_t n_gpu_layers;
     enum llama_split_mode split_mode;
-    enum llama_load_mode load_mode;
-    enum llama_lazy_mode lazy_mode;
     int32_t main_gpu;
     const float * tensor_split;
     llama_progress_callback progress_callback;
     void * progress_callback_user_data;
     const struct llama_model_kv_override * kv_overrides;
     bool vocab_only;
+    bool use_mmap;
+    bool use_direct_io;
+    bool use_mlock;
     bool check_tensors;
     bool use_extra_bufts;
     bool no_host;
     bool no_alloc;
-    bool load_mtp;
 };
 
 struct llama_sampler_seq_config {
@@ -167,6 +149,7 @@ struct llama_sampler_seq_config {
     struct llama_sampler * sampler;
 };
 
+// Layout copied from include/llama.h at b9870.
 struct llama_context_params {
     uint32_t n_ctx;
     uint32_t n_batch;
@@ -174,7 +157,6 @@ struct llama_context_params {
     uint32_t n_seq_max;
     uint32_t n_rs_seq;
     uint32_t n_outputs_max;
-    uint32_t n_outputs_max_per_seq;
     int32_t n_threads;
     int32_t n_threads_batch;
     enum llama_context_type ctx_type;
@@ -216,8 +198,6 @@ struct llama_chat_message {
     const char * content;
 };
 
-// Function declarations are used only for compile-time function-pointer types.
-// The bridge resolves every symbol dynamically from the downloaded llama engine.
 extern "C" {
 void llama_backend_init(void);
 struct llama_model_params llama_model_default_params(void);
@@ -228,6 +208,7 @@ void llama_model_free(struct llama_model * model);
 struct llama_context * llama_init_from_model(struct llama_model * model, struct llama_context_params params);
 void llama_free(struct llama_context * ctx);
 const struct llama_vocab * llama_model_get_vocab(const struct llama_model * model);
+int32_t llama_model_meta_val_str(const struct llama_model * model, const char * key, char * buf, size_t buf_size);
 const char * llama_model_chat_template(const struct llama_model * model, const char * name);
 int32_t llama_chat_apply_template(const char * tmpl, const struct llama_chat_message * chat, size_t n_msg, bool add_ass, char * buf, int32_t length);
 int32_t llama_tokenize(const struct llama_vocab * vocab, const char * text, int32_t text_len, llama_token * tokens, int32_t n_tokens_max, bool add_special, bool parse_special);
@@ -235,6 +216,8 @@ int32_t llama_token_to_piece(const struct llama_vocab * vocab, llama_token token
 bool llama_vocab_is_eog(const struct llama_vocab * vocab, llama_token token);
 llama_memory_t llama_get_memory(const struct llama_context * ctx);
 void llama_memory_clear(llama_memory_t mem, bool data);
+bool llama_memory_seq_rm(llama_memory_t mem, llama_seq_id seq_id, llama_pos p0, llama_pos p1);
+void llama_memory_seq_add(llama_memory_t mem, llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta);
 void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback abort_callback, void * abort_callback_data);
 struct llama_batch llama_batch_get_one(llama_token * tokens, int32_t n_tokens);
 int32_t llama_decode(struct llama_context * ctx, struct llama_batch batch);
@@ -247,6 +230,5 @@ struct llama_sampler * llama_sampler_init_dist(uint32_t seed);
 llama_token llama_sampler_sample(struct llama_sampler * smpl, struct llama_context * ctx, int32_t idx);
 void llama_sampler_free(struct llama_sampler * smpl);
 void llama_log_set(ggml_log_callback log_callback, void * user_data);
-const char * llama_version(void);
 void ggml_backend_load_all_from_path(const char * dir_path);
 }

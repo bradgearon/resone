@@ -27,6 +27,22 @@ if(WIN32)
 endif()
 
 
+
+# Local speech-to-singing transform used by the Vocals lane. This is Resone's
+# own compact DSP library; Qwen TTS itself is loaded dynamically at runtime.
+add_library(wds_resone_vocals SHARED ../../native/vocals/resone_vocals.cpp
+  ../../native/vocals/resone_vocal_phonetics.cpp
+  ../../native/vocals/resone_vocal_articulation.cpp
+)
+target_include_directories(wds_resone_vocals PRIVATE ../../native/vocals)
+target_compile_definitions(wds_resone_vocals PRIVATE RESONE_VOCALS_EXPORTS NOMINMAX)
+set_target_properties(wds_resone_vocals PROPERTIES
+ OUTPUT_NAME "wds.resone.vocals"
+ RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out"
+ RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/out/Release"
+ LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out"
+ LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/out/Release")
+
 # Thin in-process llama.cpp bridge. Resone vendors only the pinned public ABI
 # declarations needed to compile this loader; it never clones or builds llama.cpp.
 # The actual implementation is supplied at runtime by a prebuilt engine ZIP.

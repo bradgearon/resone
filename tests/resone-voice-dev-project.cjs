@@ -1,0 +1,25 @@
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert');
+const root = path.resolve(__dirname, '..');
+const build = fs.readFileSync(path.join(root, 'build-voice.ps1'), 'utf8');
+const native = fs.readFileSync(path.join(root, 'build-voice-native.ps1'), 'utf8');
+const cmake = fs.readFileSync(path.join(root, 'tools/resone-voice/native/CMakeLists.txt'), 'utf8');
+const csproj = fs.readFileSync(path.join(root, 'tools/resone-voice/ResoneVoice.csproj'), 'utf8');
+
+assert(build.includes("$CliExe = Join-Path $VoiceOut 'resone-voice.exe'"));
+assert(build.includes('$BootstrapCli = $NativeOnly -and !(Test-Path $CliExe)'));
+assert(build.includes('$BuildCli = !$NativeOnly -or $BootstrapCli'));
+assert(build.includes('dotnet build $CliProject'));
+assert(build.includes('if (!(Test-Path $CliExe))'));
+assert(native.includes("build\\voice\\resone-voice.exe"));
+assert(cmake.includes('../../../native/vocals/resone_vocals.cpp'));
+assert(cmake.includes('../../../native/vocals/resone_vocal_phonetics.cpp'));
+assert(cmake.includes('../../../native/vocals/resone_vocal_articulation.cpp'));
+assert(csproj.includes('../../src/wds.resone.api/wds.resone.api.csproj'));
+assert(csproj.includes('PackageReference Include=\"NAudio\"'));
+const program = fs.readFileSync(path.join(root, 'tools/resone-voice/Program.cs'), 'utf8');
+assert(program.includes('DirectSoundOut'));
+assert(program.includes('--no-play'));
+assert(program.includes('PlayDirectSoundAsync'));
+console.log('resone-voice in-tree build regression: PASS');

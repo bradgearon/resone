@@ -74,17 +74,26 @@ SONG MEMORY NOTES
 Melody notes: ...
 Motifs: ...
 Important chords: ...
+Next composer notes: ...
 ```
 
 Reusable exact Resonator fragments can be placed in backticks. The marker and memory text are removed before MIDI parsing.
 
-`SongGenerationProvisioner` stores the compact notes and extracts exact reusable musical memories. The next section/lane can receive them without receiving the entire prior song notation.
+`SongGenerationProvisioner` stores the compact stable notes and extracts exact reusable musical memories. `Next composer notes` is treated differently: it is the live handoff list. The latest composer replaces that list with every incoming commitment it did not fulfill plus any new setup/payoff obligations it created. Historical section memory does not keep stale handoff lines, so completed obligations do not accidentally reappear. Every later chunk receives the current list as `OPEN COMPOSER COMMITMENTS — MUST BE FULFILLED OR CARRIED FORWARD`.
 
-## 4. Answering parts
+A handoff should say what is owed and, when relevant, its target lane/section. Examples: finish a two-chord setup, resolve/return to a remembered pitch, answer or counter a phrase later, land a drum roll on the next section downbeat, or complete a transition in another lane. If the current composer cannot fulfill an item because it belongs to a later lane/section, it must carry it forward rather than dropping it.
 
-The normal composer instructions include an answering-part rule. An answer should be designed relative to the remembered/source note at the corresponding musical position and use the narrative director's Continuation interval/perspective. Rhythm and delivery should vary as part of the response—for example, a three-note repeated statement can be answered by the continuation interval twice faster/staccato and a third time delayed.
+## 4. Statements, answers, and counters
 
-## 5. Existing generation remains unchanged
+The composer treats a remembered statement as positional note anchors. To **answer**, each important response note is designed relative to the source note at the corresponding remembered position and uses the narrative director / interval guide's **Continuation** relationship to carry the thought farther. To **counter**, the same positional anchoring and Continuation logic is used, but the result deliberately contrasts, rejects, interrupts, inverts, or reframes the prior statement rather than simply extending it.
+
+Rhythm and delivery are independent expressive dimensions and should vary. For example, if a statement hits A three times, the response can use the chosen Continuation relationship from each remembered A while answering the first two faster/staccato and delaying or holding the third. This keeps the musical conversation recognizable without turning it into literal repetition.
+
+## 5. Simultaneous drum hits
+
+The drum composer is explicitly told that square-bracket explicit-note chords are simultaneous percussion events. It should use forms such as `[C2 F#2]` for kick + closed hat and `[C2 D2 C#3]` for a layered downbeat/crash when those notes exist in the supplied drum map. The bracket consumes one rhythmic position, so layered kit hits do not accidentally become a fast sequence.
+
+## 6. Existing generation remains unchanged
 
 When Song mode is off:
 

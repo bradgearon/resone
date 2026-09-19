@@ -166,3 +166,12 @@ Windows icon compile follow-up (2026-09-16)
 - Set useExistingStack=false to let the launcher provision packs/models. Provide an HTTPS URL and SHA256. The launcher downloads, hashes, extracts atomically, verifies requiredFiles, and records the pack hash so it is not downloaded again until the configured SHA changes.
 - appsettings.json still selects the engine by RID through llamaEngineDirectories. win-x64 maps to engines/llm/llama-cpp-dynamic-win-x64.
 - Local inference remains in-process in the launcher worker, with contextTokens=16384, reasoning disabled, streaming enabled, llama logs suppressed, and the model kept loaded while the AI stack is active.
+
+2026-09-18 voice library + persistent song workspace:
+- Vocals lanes now expose lyrics and a persistent saved-voice selector.
+- New Voice can generate a Qwen VoiceDesign sample or import/drop a WAV, transcribes and validates it, previews/replays it, and only persists on OK.
+- VoiceDesign is a separate lazy 1.7B Qwen context; it is released when the designer closes. The Base Qwen context handles saved reference-voice speech for vocal rendering.
+- Saved voices retain their sample WAV + transcript and precomputed speaker/RVQ latents under user/voices, with the last selected voice persisted in library.json.
+- Added 20 six-note Resonator singing-preview gestures for "We develop software".
+- Song projects now persist as JSON-backed workspaces under user/songs with index/meta/project/history files, saved-song navigation, click-to-edit titles, delete confirmation, and Save & New.
+- SongDesign now supplies a generated Song title that becomes the workspace title.

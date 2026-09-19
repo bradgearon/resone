@@ -23,7 +23,7 @@ Every command is a UTF-8 JSON message `{op, requestId, payload}`. Connections ca
 | `export` | SongProject | midi/error (launcher compatibility path; the UI uses the local C ABI) |
 | `cancel` | empty | cancelled |
 
-UI project, transport, settings and recording commands stay local. AI/speech/license requests use the Resone WebSocket. MIDI rendering/export/drag from the native UI uses the synchronous local C ABI and the included Resonator code directly. Local LLM inference is llama.cpp in-process inside the launcher worker; the engine directory is selected by platform/RID and its GGML backends are dynamically loaded. The HTTP LLM URL remains only an explicit fallback when local inference is disabled. Qwen/Whisper keep their configured service endpoints. HTTP model downloads retain resume support. `requestAnimationFrame` only paints the playhead; it never queries the server.
+UI project, transport, settings and recording commands stay local. AI/speech/license requests use the Resone WebSocket. MIDI rendering/export/drag from the native UI uses the synchronous local C ABI and the included Resonator code directly. Local LLM inference is llama.cpp in-process inside the launcher worker; the engine directory is selected by platform/RID and its GGML backends are dynamically loaded. The HTTP LLM URL remains only an explicit fallback when local inference is disabled. Whisper transcription uses Resone's private bundled whisper.cpp server. Qwen TTS is also out-of-process: `QwenTtsServiceManager` lazily starts the bundled qwen-server/tts-server with the appropriate checkpoint and reclaims it after its configured idle delay. HTTP model downloads retain resume support. `requestAnimationFrame` only paints the playhead; it never queries the server.
 
 ## Early audio and threading
 
@@ -35,7 +35,7 @@ UI project, transport, settings and recording commands stay local. AI/speech/lic
 
 FluidSynth runs only on its worker. GeneralUser GS bank/preset enumeration feeds the instrument selector; names are not a hand-maintained GM list. Each lane uses a distinct synthesis channel, with MIDI channel 10 reserved for drums. Whole-project export is Standard MIDI Format 1 with a conductor track plus one independent track per audible lane; lane drag/export uses a single-track MIDI file. Both paths emit bank/program events and preserve clip length.
 
-Voice input captures up to 90 seconds of mono 16 kHz PCM from the default Windows microphone. Send submits one WAV to Whisper, and the returned transcript immediately triggers composition with the selected lane/context. Cancel discards the capture. This is the input flow; Qwen output is separately available through `speak`. Set a registered TTS voice or configure a reference WAV for the Base clone model.
+Voice input captures up to 90 seconds of mono 16 kHz PCM from the default Windows microphone. Send submits one WAV to Whisper, and the returned transcript immediately triggers composition with the selected lane/context. Cancel discards the capture. Qwen output is managed out-of-process: the Base checkpoint is used for saved reference-voice speech/vocal rendering, while the 1.7B VoiceDesign checkpoint is loaded by the VoiceDesign service when the New Voice workflow becomes active. Service activity refreshes the configured idle shutdown timer.
 
 ## Reuse and necessary changes
 
@@ -45,10 +45,18 @@ Adapted: namespaces, source-generated serialization for NativeAOT, dependency co
 
 The C++ editor, FluidSynth playback and model supervisor are new implementations of those boundaries, not byte-for-byte copies of the WPF/NAudio classes. WPF and NAudio are not suitable as a NativeAOT VST UI/audio dependency.
 
+## Voice library and song workspace
+
+Saved voices live under `%LOCALAPPDATA%/Wds/Resone/user/voices`. A designed/imported sample is transcribed and, on save, Base Qwen precomputes the reusable speaker embedding/RVQ reference. The original WAV and matching transcript are retained alongside those compact latents. `library.json` stores metadata plus the durable last-selected voice id. Temporary previews are not promoted until OK.
+
+The Qwen Base and VoiceDesign checkpoints have separate context lifetimes over the same pinned qwentts.cpp ABI. Base is reused for reference speech. VoiceDesign is loaded only when generating a designed preview and can be released when the dialog closes. Windows native dependency search is scoped to Qwen initialization and restored immediately.
+
+Song workspaces use a lightweight index and per-song JSON files rather than one ever-growing browser blob. The producer's `Song title:` becomes the default editable workspace title; History/Songs navigation loads the corresponding project and prompt snapshots.
+
 ## Current extension points
 
 - The VST uses its own Play control and renders audio to the host; DAW transport synchronization, incoming MIDI performance and MIDI-out are not implemented or advertised in its capability flags.
 - Local instrument audition starts after notation validation, not while unvalidated LLM tokens arrive.
-- TTS is exposed as ordered PCM chunks through the API; this music editor has no chat/TTS audition button.
+- Normal TTS remains available as ordered PCM chunks through the API. The Vocals lane additionally has a saved reference-voice library and a Voice Designer preview/play workflow.
 - The first native editor targets Windows x64. The C ABI and audio core have been built/tested on Linux, but iPlug2/WebView2/WinMM require Windows testing.
-- API settings persist per user; standalone work persists in song.json; VST work is stored in the DAW's state chunk. Prompt history and undo are retained within the open editor session.
+- API/settings and native window preferences persist per user. Resone song workspaces are JSON-backed under `%LOCALAPPDATA%/Wds/Resone/user/songs` (`index.json` plus per-song `meta.json`, `project.json`, and `history.json`) and are shared by standalone/VST editor sessions; VST project state is still mirrored in the DAW state chunk. Undo remains an open-editor concern.

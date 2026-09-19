@@ -45,7 +45,12 @@ public sealed class ArrangementComposer(HttpClient http, ResoneSettings settings
         if (target.Drums)
             prompt += "\nSelected lane is percussion. Use mode=drums and only these explicit drum notes: "
                 + string.Join(", ", Drums.Select(d => $"{d.Note}={d.Name}"))
-                + ". Compose a style-appropriate groove with rests, subdivisions and accents.";
+                + ". Compose a style-appropriate groove with rests, subdivisions and accents. "
+                + "IMPORTANT: square-bracket chord syntax means SIMULTANEOUS DRUM HITS and should be used whenever drums hit together. "
+                + "For example [C2 F#2] is kick + closed hat at the same instant, [D2 F#2] is snare + closed hat, and [C2 D2 C#3] layers kick + snare + crash. "
+                + "A bracketed drum chord consumes one rhythmic event/time slot; duration, velocity, gate, offset, and accent modifiers apply to the whole bracketed hit.";
+        else if (target.Vocals)
+            prompt += "\nSelected lane is a VOCAL MELODY. Generate monophonic, singable pitched Resonator notation only; do not emit lyrics, words, phonemes, or mode=drums. The lyrics/text and voice are rendered separately after the MIDI exists. Keep phrases human-singable, leave breathing space, avoid impossible overlapping vocal notes, and use rhythm/duration as intentional syllable and vowel timing.";
         else
             prompt += "\nSelected lane is pitched. Do not emit mode=drums.";
 
@@ -58,10 +63,13 @@ You are rendering one lane for one producer-planned section of a larger song. Th
 Return the selected track first using the normal Resonator contract. AFTER the complete notation, emit a line containing exactly:
 SONG MEMORY NOTES
 Then emit concise plain text with exactly these labels:
-Melody notes: important line-shape, answering-phrase, remembered-note, register, or melodic facts worth carrying forward. Put exact reusable Resonator fragments in backticks when useful. If this lane establishes no melodic fact, leave this line brief.
+Melody notes: important line-shape, statement/answer/counter relationships, remembered-note positions, register, or melodic facts worth carrying forward. Put exact reusable Resonator fragments in backticks when useful. If this lane establishes no melodic fact, leave this line brief.
 Motifs: only important reusable motifs/rhythmic cells. Put exact reusable Resonator fragments in backticks and briefly describe their role.
 Important chords: only important chord/progression/harmonic relationships worth remembering. Put exact reusable Resonator fragments in backticks when available.
+Next composer notes: the ACTIVE handoff list of musical promises that still need fulfillment later. Include any incoming OPEN COMPOSER COMMITMENTS that this chunk did not fulfill, and add new setups created here (for example a two-chord relationship that must answer/resolve later, a held/divergent pitch that must return, a drum roll that must land on the next section, a motif whose third repetition is intentionally delayed, or a transition that another lane/section must complete). State the intended target lane/section when it matters. Remove an incoming item only if this chunk actually fulfilled it. If no commitments remain, write `None.`
 Keep this memory block compact. Do not paste the whole generated track into it. The SONG MEMORY NOTES block is forbidden in ordinary lane generation and exists only in song mode.
+
+HANDOFF DISCIPLINE: Read OPEN COMPOSER COMMITMENTS in the supplied full-song context before composing. A commitment that belongs to another lane or a later section is not fulfilled merely because you saw it; carry it forward in Next composer notes. Each composer call is responsible for preserving unresolved promises so no setup, answer/counter relationship, harmonic expectation, rhythmic pickup, roll, held note, or delayed payoff disappears between chunks.
 """;
         }
 
@@ -73,7 +81,7 @@ Keep this memory block compact. Do not paste the whole generated track into it. 
         }
         JsonObject LaneContext(Lane l) => new() {
             ["laneId"]=l.Id, ["name"]=l.Name, ["bank"]=l.Bank,
-            ["program"]=l.Program, ["drums"]=l.Drums,
+            ["program"]=l.Program, ["drums"]=l.Drums, ["vocals"]=l.Vocals,
             ["existingNotation"]=l.Notation,
             ["existingLengthBeats"]=LaneLength(l),
             ["noteCount"]=l.Notes.Count,
@@ -101,7 +109,7 @@ Keep this memory block compact. Do not paste the whole generated track into it. 
             composerRequest += "\n\n" + songContext.Packet;
         var messages = new List<ChatMessage> { new("system",prompt), new("user",composerRequest) };
         if (progress is not null) await progress(songContext is null ? "Composing · Arranging…" : "Song · Arranging section…").ConfigureAwait(false);
-        var text = await client.CompleteTextStreamingAsync(messages, 16384, songContext is null ? "MusicArrangement" : "SongChunkArrangement", null, token);
+        var text = await client.CompleteTextStreamingAsync(messages, songContext is null ? "MusicArrangement" : "SongChunkArrangement", null, token);
         token.ThrowIfCancellationRequested();
         if (progress is not null) await progress(songContext is null ? "Composing · Rendering MIDI…" : "Song · Rendering MIDI…").ConfigureAwait(false);
 
@@ -161,7 +169,10 @@ Keep this memory block compact. Do not paste the whole generated track into it. 
             if(notation.Length is 0 or >65536) throw new ArgumentException("Invalid notation length for "+lane.Name);
             var profile=new ResonatorProfile();
             if(lane.Drums) foreach(var d in Drums) profile.Percussion.NoteMap[d.Note]=d.Pitch;
-            var c=new ResonatorMidiGenerator().Generate(notation,profile).Composition;
+            var generated=new ResonatorMidiGenerator().Generate(notation,profile);
+            var c=generated.Composition;
+            foreach (var warning in generated.Warnings)
+                warnings.Add((JsonNode?)JsonValue.Create("Recovered " + lane.Name + ": " + warning));
 
             var notes=c.Events.OfType<NoteEvent>().Select(n=>new Note(n.Tick/(double)c.Ppq,n.DurationTicks/(double)c.Ppq,n.MidiNote,n.Velocity)).ToList();
             if(notes.Count is 0 or >8192 || notes.Any(n=>n.Start<0 || n.Duration<=0 || n.Start+n.Duration>4096))

@@ -23,16 +23,10 @@ Resone::Resone(const iplug::InstanceInfo &info)
     audio_ =
         std::make_unique<resone::AudioEngine>(home_, [this](Json j) { dispatcher_->post(std::move(j)); });
 #ifdef APP_API
-    try {
-        std::ifstream in(resone::preferences() / "song.json");
-        if (in) {
-            in >> project_;
-            resone::parseSong(project_);
-            state_ = project_.dump();
-        }
-    } catch (...) {
-        project_ = nullptr;
-    }
+    // Standalone song persistence belongs to SongWorkspaceStore. Do not synchronously
+    // read a second project copy here: it caused the WebView to render an obsolete
+    // native project and then render the saved workspace again during startup.
+    project_ = nullptr;
 #endif
     mEditorInitFunc = [this] {
         ready_ = false;
@@ -234,12 +228,16 @@ bool Resone::OnMessage(int tag, int, int size, const void *data) {
             audio_->stop();
             emit({{"op", "transport"}, {"payload", {{"state", "stopped"}, {"seconds", 0}}}});
         } else if (op == "project") {
+#ifdef APP_API
+            // The browser/workspace store owns durable standalone state. Keep the latest
+            // project in memory only; validating + dumping + write-through JSON on every
+            // edit was synchronous work on the native editor thread.
+            project_ = p;
+#else
             resone::parseSong(p);
             project_ = p;
             std::lock_guard lock(stateMutex_);
             state_ = p.dump();
-#ifdef APP_API
-            resone::saveJson(resone::preferences() / "song.json", p);
 #endif
         } else if (op == "voiceStart") {
             audio_->stop();

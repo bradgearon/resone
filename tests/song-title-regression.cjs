@@ -1,0 +1,16 @@
+const fs=require('fs'), path=require('path'), assert=require('assert');
+const root=path.resolve(__dirname,'..');
+const designer=fs.readFileSync(path.join(root,'src/wds.resone.api/SongCompositionDesigner.cs'),'utf8');
+const app=fs.readFileSync(path.join(root,'src/wds.resone.ui/resources/web/app.js'),'utf8');
+const store=fs.readFileSync(path.join(root,'src/wds.resone.api/SongWorkspaceStore.cs'),'utf8');
+assert(designer.includes('NEVER use placeholder titles'));
+assert(designer.includes('IsGenericTitle(title)'));
+assert(designer.includes('Untitled Song') && designer.includes('new composition'));
+assert(designer.includes('(?:[-*]\\s*)?') && designer.includes('Song\\s+title'));
+assert(app.includes('function provisionalSongTitle'));
+assert(app.includes('function songDesignTitle'));
+assert(app.includes('if (isGenericWorkspaceTitle(workspaceTitle))'));
+assert(app.includes('workspaceTitle=songDesignTitle(p,songRun.brief)'));
+assert(store.includes('RepairGenericTitlesAsync') && store.includes('SongCompositionDesigner.ExtractTitle(meta.ProducerDesign, brief)'));
+assert(store.includes('IsGenericTitle(repaired)')); 
+console.log('PASS new songs get provisional/producer titles, generic placeholders are rejected, and existing Untitled workspaces are repaired from producer/history metadata');

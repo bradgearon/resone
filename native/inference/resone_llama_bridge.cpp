@@ -2,11 +2,13 @@
 #include "json.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef _WIN32
@@ -113,6 +115,7 @@ struct llama_api {
     decltype(&llama_init_from_model) init_from_model{};
     decltype(&llama_free) context_free{};
     decltype(&llama_model_get_vocab) model_get_vocab{};
+    decltype(&llama_model_meta_val_str) model_meta_val_str{};
     decltype(&llama_model_chat_template) model_chat_template{};
     decltype(&llama_chat_apply_template) chat_apply_template{};
     decltype(&llama_tokenize) tokenize{};
@@ -120,6 +123,8 @@ struct llama_api {
     decltype(&llama_vocab_is_eog) vocab_is_eog{};
     decltype(&llama_get_memory) get_memory{};
     decltype(&llama_memory_clear) memory_clear{};
+    decltype(&llama_memory_seq_rm) memory_seq_rm{};
+    decltype(&llama_memory_seq_add) memory_seq_add{};
     decltype(&llama_set_abort_callback) set_abort_callback{};
     decltype(&llama_batch_get_one) batch_get_one{};
     decltype(&llama_decode) decode{};
@@ -132,7 +137,7 @@ struct llama_api {
     decltype(&llama_sampler_sample) sampler_sample{};
     decltype(&llama_sampler_free) sampler_free{};
     decltype(&llama_log_set) log_set{};
-    decltype(&llama_version) version{};
+    const char * (*version)(){}; // optional; b9870 public header does not require this export
     decltype(&ggml_backend_load_all_from_path) backend_load_all_from_path{};
 };
 
@@ -173,6 +178,7 @@ llama_api & load_runtime(const std::string & engine_dir) {
     LLAMA_FN(init_from_model, "llama_init_from_model");
     LLAMA_FN(context_free, "llama_free");
     LLAMA_FN(model_get_vocab, "llama_model_get_vocab");
+    LLAMA_FN(model_meta_val_str, "llama_model_meta_val_str");
     LLAMA_FN(model_chat_template, "llama_model_chat_template");
     LLAMA_FN(chat_apply_template, "llama_chat_apply_template");
     LLAMA_FN(tokenize, "llama_tokenize");
@@ -180,6 +186,8 @@ llama_api & load_runtime(const std::string & engine_dir) {
     LLAMA_FN(vocab_is_eog, "llama_vocab_is_eog");
     LLAMA_FN(get_memory, "llama_get_memory");
     LLAMA_FN(memory_clear, "llama_memory_clear");
+    LLAMA_FN(memory_seq_rm, "llama_memory_seq_rm");
+    LLAMA_FN(memory_seq_add, "llama_memory_seq_add");
     LLAMA_FN(set_abort_callback, "llama_set_abort_callback");
     LLAMA_FN(batch_get_one, "llama_batch_get_one");
     LLAMA_FN(decode, "llama_decode");
@@ -192,7 +200,13 @@ llama_api & load_runtime(const std::string & engine_dir) {
     LLAMA_FN(sampler_sample, "llama_sampler_sample");
     LLAMA_FN(sampler_free, "llama_sampler_free");
     LLAMA_FN(log_set, "llama_log_set");
-    LLAMA_FN(version, "llama_version");
+    // llama_version() was not part of the b9870 public header contract.
+    // Resolve it opportunistically for diagnostics only; never fail engine load if absent.
+#ifdef _WIN32
+    api->version = reinterpret_cast<const char * (*)()>(GetProcAddress(api->llama, "llama_version"));
+#else
+    api->version = reinterpret_cast<const char * (*)()>(dlsym(api->llama, "llama_version"));
+#endif
 #undef LLAMA_FN
 
     api->backend_load_all_from_path = load_symbol<decltype(api->backend_load_all_from_path)>(api->ggml, "ggml_backend_load_all_from_path");
@@ -210,12 +224,67 @@ struct session {
     std::mutex lock;
     int context_tokens{};
     std::string engine_version;
+    std::string model_architecture;
 
     ~session() {
         if (ctx) api->context_free(ctx);
         if (model) api->model_free(model);
     }
 };
+
+std::string trim_copy(const std::string & value) {
+    size_t first = 0;
+    size_t last = value.size();
+    while (first < last && std::isspace(static_cast<unsigned char>(value[first]))) ++first;
+    while (last > first && std::isspace(static_cast<unsigned char>(value[last - 1]))) --last;
+    return value.substr(first, last - first);
+}
+
+bool is_gemma4_template(const char * tmpl) {
+    if (!tmpl) return false;
+    const std::string_view view(tmpl);
+    return view.find("<|turn>") != std::string_view::npos &&
+           view.find("<turn|>") != std::string_view::npos;
+}
+
+// b9870's llama_chat_apply_template() only knows the older hard-coded Gemma
+// format (<start_of_turn>...). Gemma 4 uses <|turn>role ... <turn|>, so the
+// public b9870 formatter returns -1 for the template embedded in Gemma 4 GGUFs.
+// Keep the normal llama formatter for supported models and only use this
+// narrow fallback for a detected Gemma 4 template/architecture.
+std::string format_gemma4_prompt(const std::vector<std::string> & roles,
+                                 const std::vector<std::string> & contents) {
+    std::string prompt;
+    size_t reserve = 64;
+    for (const auto & c : contents) reserve += c.size() + 32;
+    prompt.reserve(reserve);
+
+    for (size_t i = 0; i < roles.size(); ++i) {
+        std::string role = roles[i];
+        if (role == "assistant") role = "model";
+        if (role == "developer") role = "system";
+        if (role != "system" && role != "user" && role != "model")
+            throw std::runtime_error("Unsupported Gemma 4 chat role: " + role);
+
+        std::string content = trim_copy(contents[i]);
+        // Thinking is opt-in for Gemma 4 through <|think|>. Resone explicitly
+        // runs non-thinking inference, so never forward an accidental leading
+        // opt-in token from a system instruction.
+        if (role == "system" && content.rfind("<|think|>", 0) == 0)
+            content = trim_copy(content.substr(std::strlen("<|think|>")));
+
+        prompt += "<|turn>";
+        prompt += role;
+        prompt += '\n';
+        prompt += content;
+        prompt += "<turn|>\n";
+    }
+
+    // Gemma 4 E2B/E4B thinking-off generation prompt. Do not insert the empty
+    // thought channel used by some of the larger Gemma 4 variants.
+    prompt += "<|turn>model\n";
+    return prompt;
+}
 
 std::string format_prompt(session & s, const char * messages_json) {
     const auto parsed = json::parse(messages_json ? messages_json : "[]");
@@ -228,10 +297,8 @@ std::string format_prompt(session & s, const char * messages_json) {
     for (const auto & item : parsed) {
         roles.push_back(item.value("role", "user"));
         contents.push_back(item.value("content", ""));
-        // Gemma 4 thinking mode is opt-in through <|think|>. Resone never adds it.
-        if (roles.back() == "system" && contents.back().rfind("<|think|>", 0) == 0) {
+        if (roles.back() == "system" && contents.back().rfind("<|think|>", 0) == 0)
             contents.back().erase(0, std::strlen("<|think|>"));
-        }
     }
 
     std::vector<llama_chat_message> chat;
@@ -240,12 +307,22 @@ std::string format_prompt(session & s, const char * messages_json) {
 
     const char * tmpl = s.api->model_chat_template(s.model, nullptr);
     int32_t needed = s.api->chat_apply_template(tmpl, chat.data(), chat.size(), true, nullptr, 0);
-    if (needed <= 0) throw std::runtime_error("llama.cpp could not apply the model's chat template.");
-    std::string prompt(static_cast<size_t>(needed) + 1, '\0');
-    int32_t written = s.api->chat_apply_template(tmpl, chat.data(), chat.size(), true, prompt.data(), static_cast<int32_t>(prompt.size()));
-    if (written < 0) throw std::runtime_error("llama.cpp chat-template formatting failed.");
-    prompt.resize(static_cast<size_t>(written));
-    return prompt;
+    if (needed > 0) {
+        std::string prompt(static_cast<size_t>(needed) + 1, '\0');
+        int32_t written = s.api->chat_apply_template(tmpl, chat.data(), chat.size(), true,
+                                                     prompt.data(), static_cast<int32_t>(prompt.size()));
+        if (written < 0) throw std::runtime_error("llama.cpp chat-template formatting failed.");
+        prompt.resize(static_cast<size_t>(written));
+        return prompt;
+    }
+
+    if (s.model_architecture == "gemma4" || is_gemma4_template(tmpl))
+        return format_gemma4_prompt(roles, contents);
+
+    std::string detail = "llama.cpp b9870 could not apply the model's chat template";
+    if (!s.model_architecture.empty()) detail += " (architecture=" + s.model_architecture + ")";
+    detail += ". The embedded template is not supported by b9870's legacy formatter.";
+    throw std::runtime_error(detail);
 }
 
 struct abort_state {
@@ -260,7 +337,14 @@ bool abort_eval(void * opaque) {
 
 } // namespace
 
-RESONE_API int resone_llama_bridge_abi() { return 1; }
+// Bridge ABI 3 removes application-level output-token budgets. Generation now
+// continues until EOS/cancellation, shifting the b9870 KV context when needed.
+// The configured context size is the model's active window, not an output cap.
+RESONE_API int resone_llama_bridge_abi() { return 3; }
+
+RESONE_API const char * resone_llama_bridge_build_id() {
+    return "resone-llama-bridge/3 llama.cpp-b9870 unlimited-output";
+}
 
 RESONE_API void * resone_llama_open(const char * engine_dir,
                                     const char * model_path,
@@ -277,12 +361,16 @@ RESONE_API void * resone_llama_open(const char * engine_dir,
         auto s = std::make_unique<session>();
         s->api = &api;
         s->context_tokens = context_tokens;
-        s->engine_version = api.version ? api.version() : "unknown";
+        s->engine_version = api.version ? api.version() : "b9870";
 
         auto mp = api.model_default_params();
         mp.n_gpu_layers = gpu_layers;
         s->model = api.model_load_from_file(model_path, mp);
         if (!s->model) throw std::runtime_error("llama.cpp could not load the GGUF model. Check model path, engine/backend compatibility, VRAM and RAM.");
+
+        char architecture[128]{};
+        if (api.model_meta_val_str(s->model, "general.architecture", architecture, sizeof(architecture)) >= 0)
+            s->model_architecture = architecture;
 
         auto cp = api.context_default_params();
         cp.n_ctx = static_cast<uint32_t>(context_tokens);
@@ -309,7 +397,6 @@ RESONE_API void resone_llama_close(void * handle) {
 
 RESONE_API int resone_llama_generate(void * handle,
                                      const char * messages_json,
-                                     int max_tokens,
                                      float temperature,
                                      int top_k,
                                      float top_p,
@@ -328,8 +415,12 @@ RESONE_API int resone_llama_generate(void * handle,
         const auto * vocab = api.model_get_vocab(s.model);
         int token_count = -api.tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), nullptr, 0, true, true);
         if (token_count <= 0) throw std::runtime_error("llama.cpp tokenization failed.");
-        if (token_count + max_tokens > s.context_tokens)
-            throw std::runtime_error("Prompt plus output budget exceeds the configured Resone context (" + std::to_string(s.context_tokens) + " tokens). Reduce song context or the output budget.");
+        // The context size is a physical rolling window, not a pre-reserved output
+        // budget. A prompt only fails when the prompt itself cannot fit. Generated
+        // output is allowed to continue until EOS; if the window fills, shift the
+        // middle/oldest portion while preserving the beginning and newest material.
+        if (token_count >= s.context_tokens - 4)
+            throw std::runtime_error("The formatted prompt itself exceeds the configured Resone context (" + std::to_string(s.context_tokens) + " tokens). Increase contextTokens or reduce the actual prompt material.");
 
         std::vector<llama_token> tokens(static_cast<size_t>(token_count));
         if (api.tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), tokens.data(), token_count, true, true) < 0)
@@ -368,7 +459,9 @@ RESONE_API int resone_llama_generate(void * handle,
         api.sampler_chain_add(sampler, api.sampler_init_temp(temperature));
         api.sampler_chain_add(sampler, api.sampler_init_dist(LLAMA_DEFAULT_SEED));
 
-        for (int i = 0; i < max_tokens; ++i) {
+        int n_past = token_count;
+        const int n_keep = std::min(token_count, std::max(1, s.context_tokens / 4));
+        while (true) {
             if (cancel && cancel(user)) return 1;
             const llama_token token = api.sampler_sample(sampler, s.ctx, -1);
             if (api.vocab_is_eog(vocab, token)) return 0;
@@ -386,14 +479,27 @@ RESONE_API int resone_llama_generate(void * handle,
             }
             if (!piece.empty() && emit && emit(user, piece.data(), static_cast<int>(piece.size())) != 0) return 1;
 
+            // Infinite/uncapped generation using llama.cpp b9870's own context-shift
+            // strategy: preserve the first quarter (system/identity), discard half of
+            // the older middle, and retain the newest generated material.
+            if (n_past + 1 >= s.context_tokens) {
+                const int n_left = n_past - n_keep;
+                const int n_discard = std::max(1, n_left / 2);
+                auto mem = api.get_memory(s.ctx);
+                if (n_left <= 0 || !api.memory_seq_rm(mem, 0, n_keep, n_keep + n_discard))
+                    throw std::runtime_error("llama.cpp context is full and could not shift its rolling context window.");
+                api.memory_seq_add(mem, 0, n_keep + n_discard, n_past, -n_discard);
+                n_past -= n_discard;
+            }
+
             auto batch = api.batch_get_one(const_cast<llama_token *>(&token), 1);
             const int status = api.decode(s.ctx, batch);
             if (status != 0) {
                 if (cancel && cancel(user)) return 1;
                 throw std::runtime_error("llama.cpp token evaluation failed.");
             }
+            ++n_past;
         }
-        throw std::runtime_error("Output token limit reached before completion.");
     } catch (const std::exception & e) {
         write_error(err, err_size, e.what());
         return -1;

@@ -1,0 +1,27 @@
+const fs=require('node:fs');
+const read=p=>fs.readFileSync(p,'utf8');
+const must=(v,m)=>{if(!v)throw new Error(m)};
+const gen=read('src/wds.resone.api/SongGeneration.cs');
+const arranger=read('src/wds.resone.api/ArrangementComposer.cs');
+const planner=read('src/wds.resone.api/MusicNarrativePlanner.cs');
+const producer=read('src/wds.resone.api/SongCompositionDesigner.cs');
+const tips=read('assets/Instructions/Music/composition-tips.md');
+const json=JSON.parse(read('assets/Instructions/Music/music-composition.json'));
+
+must(gen.includes('PendingComposerNotes'), 'song state must persist open composer commitments');
+must(gen.includes('OPEN COMPOSER COMMITMENTS — MUST BE FULFILLED OR CARRIED FORWARD'), 'song packet must provision open commitments');
+must(gen.includes('BuildStableMemoryBlock'), 'historical memory must exclude live handoff state');
+must(gen.includes('TryExtractField(block, "Next composer notes"'), 'chunk notes must update the live handoff list');
+must(gen.includes('IsNoOpenCommitment'), 'composer must be able to explicitly clear completed handoffs');
+must(arranger.includes('Next composer notes:'), 'song composer memory contract missing handoff label');
+must(arranger.includes('did not fulfill'), 'composer must preserve unfulfilled incoming commitments');
+must(planner.includes('STATEMENT / ANSWER / COUNTER PLANNING'), 'director missing answer/counter semantics');
+must(planner.includes('corresponding remembered positions'), 'director must use positional remembered-note anchors');
+must(producer.includes('answer, counter'), 'producer motif strategy should distinguish answer and counter');
+must(tips.includes('## Statements, answers, and counters'), 'composer tips missing statement response guidance');
+must(tips.includes('OPEN COMPOSER COMMITMENT'), 'composer tips missing continuity handoff rule');
+must(json.arrangementInstructions.includes('STATEMENT / ANSWER / COUNTER RULE'), 'runtime composer instructions missing answer/counter rule');
+must(json.arrangementInstructions.includes('corresponding remembered position'), 'runtime composer must anchor responses to remembered source positions');
+must(arranger.includes('SIMULTANEOUS DRUM HITS') && arranger.includes('[C2 F#2]'), 'percussion composer prompt must explain bracketed simultaneous hits');
+must(json.arrangementInstructions.includes('simultaneous drum hits') && json.arrangementInstructions.includes('[C2 D2 C#3]'), 'runtime arrangement instructions must explain drum chord simultaneity');
+console.log('PASS positional answer/counter semantics and persistent composer handoff commitments');

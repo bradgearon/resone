@@ -14,8 +14,6 @@ namespace Wds.Resone.Api.Music;
 /// </summary>
 public static class MusicNarrativePlanner
 {
-    private const int MaxNarrativeTokens = 4096;
-
     public static async Task<string> CreateAsync(
         ILocalChatModelClient model,
         string userRequest,
@@ -57,10 +55,17 @@ Return plain text only. Build an ordered emotional journey. The plan must be mec
 - Feeling: the specific emotion, feeling, image, bodily sense, or descriptive state being created. Preserve rich descriptive language rather than reducing everything to broad labels such as happy/sad/tense.
 - Emotional transition: what this phrase grows out of and what it changes into.
 - Required interval gestures: list every interval + perspective that MUST occur recognizably in this phrase. If the feeling requires multiple intervals, explicitly list all of them and explain whether they work together, in sequence, or as setup/payoff.
-- Phrasing role: how the phrase speaks (opening statement, question, answer, expansion, withheld idea, breakthrough, return, resting point, etc.) and which Phrase perspective supports it.
+- Phrasing role: how the phrase speaks (opening statement, question, answer, counter, expansion, withheld idea, breakthrough, return, resting point, etc.) and which Phrase perspective supports it.
 - Continuation: what emotional/musical thought comes next, and which interval + Continuation perspective creates that handoff. The final phrase should instead describe the intended resting/closure behavior.
 - Placement / emphasis: where the required gesture should matter (strong beat, weak beat, held arrival, repetition, chord, bass motion, register opening, resolution, etc.).
-- Payoff / memory: what expectation, note-color, interval, motif, register, or emotional idea is established, withheld, transformed, recalled, or finally fulfilled.
+- Payoff / memory: what expectation, note-color, interval, motif, register, or emotional idea is established, withheld, transformed, recalled, or finally fulfilled. If a phrase creates a setup that must be completed by a later composer/section/lane, say exactly what must be fulfilled so it can become a composer handoff commitment.
+
+STATEMENT / ANSWER / COUNTER PLANNING:
+- A statement establishes remembered positional note anchors.
+- An answer should carry the statement farther: design its important notes relative to the source notes at corresponding remembered positions and choose the interval relationship from the field guide's Continuation perspective.
+- A counter uses the same remembered-position + Continuation logic but deliberately contrasts, rejects, interrupts, inverts, or reframes the previous statement rather than simply agreeing with it.
+- Rhythm and delivery are part of the meaning. Do not require literal rhythmic copying. A three-hit repeated statement may receive continuation-related responses with changed spacing, staccato/held treatment, syncopation, acceleration, or a delayed third response.
+- When FULL SONG CONTEXT contains OPEN COMPOSER COMMITMENTS, plan to fulfill any item that applies to the current section/lane and preserve later-lane/later-section obligations rather than treating them as optional history.
 
 A REQUIRED INTERVAL GESTURE IS A REAL COMPOSITIONAL REQUIREMENT. The later composer must actually place that interval relationship in the generated notes in the named perspective. Do not use an emotional adjective as a substitute for the interval. Do not claim that merely moving higher in register satisfies an ascending major 6th, or that a bright chord substitutes for a required major 3rd melodic gesture.
 
@@ -128,7 +133,6 @@ Required-gesture summary: a compact checklist of the interval/perspective gestur
 
         string narrative = (await model.CompleteTextStreamingAsync(
             messages,
-            MaxNarrativeTokens,
             "MusicNarrative",
             null,
             token).ConfigureAwait(false)).Trim();

@@ -22,6 +22,9 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
     private delegate int Abi();
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate nint BridgeBuildId();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate nint Open(
         [MarshalAs(UnmanagedType.LPUTF8Str)] string engineDirectory,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string modelPath,
@@ -42,7 +45,6 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
     private delegate int Generate(
         nint handle,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string messages,
-        int maxTokens,
         float temperature,
         int topK,
         float topP,
@@ -70,7 +72,6 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
 
     public async Task<string> CompleteTextStreamingAsync(
         IReadOnlyList<ChatMessage> messages,
-        int? maxTokens,
         string label,
         Action<string>? delta,
         CancellationToken token)
@@ -79,12 +80,11 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
         foreach (var m in messages)
             wire.Add((JsonNode)new JsonObject { ["role"] = m.Role, ["content"] = m.Content });
 
-        int budget = maxTokens ?? 8192;
         using var log = new LlmRequestLog(settings, label, new JsonObject
         {
             ["transport"] = "llama.cpp-in-process",
             ["messages"] = wire,
-            ["max_tokens"] = budget,
+            ["output_limit"] = "none (EOS/context-window only)",
             ["temperature"] = settings.Temperature,
             ["top_k"] = settings.TopK,
             ["top_p"] = settings.TopP,
@@ -92,12 +92,12 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
             ["flash_attention"] = settings.FlashAttention,
             ["enable_thinking"] = false,
             ["stream"] = true
-        });
+        }, "llama.cpp-in-process");
 
         await Gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            string result = await Task.Run(() => Run(wire.ToJsonString(), budget, delta, token), token).ConfigureAwait(false);
+            string result = await Task.Run(() => Run(wire.ToJsonString(), delta, token), token).ConfigureAwait(false);
             log.Complete(result);
             return result;
         }
@@ -112,7 +112,7 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
         }
     }
 
-    private string Run(string messages, int budget, Action<string>? delta, CancellationToken token)
+    private string Run(string messages, Action<string>? delta, CancellationToken token)
     {
         EnsureLoaded(settings);
         var error = new byte[4096];
@@ -152,7 +152,6 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
         int status = Export<Generate>("resone_llama_generate")(
             model,
             messages,
-            budget,
             settings.Temperature,
             settings.TopK,
             settings.TopP,
@@ -277,9 +276,11 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
                 diagnostic?.Invoke("Loading Resone llama bridge DLL.");
                 bridge = NativeLibrary.Load(bridgePath);
                 diagnostic?.Invoke("Resone llama bridge DLL loaded; checking ABI.");
-                if (Export<Abi>("resone_llama_bridge_abi")() != 1)
-                    throw new InvalidDataException("Incompatible Resone llama bridge ABI.");
-                diagnostic?.Invoke("Resone llama bridge ABI OK.");
+                int bridgeAbi = Export<Abi>("resone_llama_bridge_abi")();
+                if (bridgeAbi != 3)
+                    throw new InvalidDataException($"Incompatible/stale Resone llama bridge ABI {bridgeAbi}; expected 3. Rebuild the native bridge from this source tree.");
+                string bridgeBuild = Marshal.PtrToStringUTF8(Export<BridgeBuildId>("resone_llama_bridge_build_id")()) ?? "unknown";
+                diagnostic?.Invoke($"Resone llama bridge ABI OK: {bridgeAbi}; build={bridgeBuild}.");
             }
 
             var error = new byte[4096];
