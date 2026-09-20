@@ -25,6 +25,20 @@ public sealed class SongGenerationState
     public List<SongMusicalMemory> MusicalMemories { get; set; } = [];
     /// <summary>Open setup/payoff obligations that every later composer must either fulfill or carry forward.</summary>
     public string PendingComposerNotes { get; set; } = "";
+    /// <summary>Canonical genre selected from the producer's Overall identity using the local genre-guide matcher.</summary>
+    public string GenreId { get; set; } = "";
+    public string GenreParentId { get; set; } = "";
+    public string GenreSecondaryId { get; set; } = "";
+    public string GenreSongModifierId { get; set; } = "";
+    public string GenreDrumId { get; set; } = "";
+    public string GenreDrumFamilyIds { get; set; } = "";
+    public string GenreDrumModifierId { get; set; } = "";
+    /// <summary>Legacy combined genre context retained for loading older song-generation state.</summary>
+    public string GenreContext { get; set; } = "";
+    /// <summary>Song-design grammar shared by all Song-mode lanes.</summary>
+    public string GenreSongContext { get; set; } = "";
+    /// <summary>Drum grammar supplied only to drum lanes in Song mode.</summary>
+    public string GenreDrumContext { get; set; } = "";
 }
 
 public sealed class SongSectionMemory
@@ -58,13 +72,8 @@ public sealed record SongGenerationContext(string SectionId, string Packet);
 /// </summary>
 public static class SongGenerationProvisioner
 {
-    private const int MaxDesignChars = 18000;
-    private const int MaxComposerDesignChars = 22000;
-    private const int MaxSectionMemoryChars = 6000;
-    private const int MaxMusicalMemories = 32;
-    private const int MaxPendingComposerNotesChars = 6000;
 
-    public static SongGenerationState Create(string brief, string design, int tempo, string meter, int targetBars, string composerDesign = "")
+    public static SongGenerationState Create(string brief, string design, int tempo, string meter, int targetBars, string composerDesign = "", GenreBriefResolver.Selection? genre = null)
     {
         if (string.IsNullOrWhiteSpace(brief)) throw new ArgumentException("A song brief is required.", nameof(brief));
         if (string.IsNullOrWhiteSpace(design)) throw new ArgumentException("Producer notes are required.", nameof(design));
@@ -79,11 +88,21 @@ public static class SongGenerationProvisioner
             Tempo = tempo,
             Meter = meter,
             TargetBars = targetBars,
-            Sections = sections
+            Sections = sections,
+            GenreId = genre?.PrimaryId ?? "",
+            GenreParentId = genre?.ParentId ?? "",
+            GenreSecondaryId = genre?.SecondaryId ?? "",
+            GenreSongModifierId = genre?.SongModifierId ?? "",
+            GenreDrumId = genre?.DrumGenreId ?? "",
+            GenreDrumFamilyIds = genre?.DrumFamilyIds ?? "",
+            GenreDrumModifierId = genre?.DrumModifierId ?? "",
+            GenreContext = "",
+            GenreSongContext = genre?.SongPromptContext ?? "",
+            GenreDrumContext = genre?.DrumPromptContext ?? ""
         };
     }
 
-    public static string BuildPacket(SongGenerationState state, string sectionId, string laneName)
+    public static string BuildPacket(SongGenerationState state, string sectionId, string laneName, bool drumLane)
     {
         ArgumentNullException.ThrowIfNull(state);
         var section = FindSection(state, sectionId);
@@ -96,14 +115,36 @@ public static class SongGenerationProvisioner
             .AppendLine($"Current lane: {laneName}")
             .AppendLine()
             .AppendLine("PRODUCER NOTES")
-            .AppendLine(Clip(state.Design, MaxDesignChars));
+            .AppendLine(state.Design);
+
+        // New states store song and drum genre guidance separately so pitched lanes do not pay the
+        // token cost of drum grammar. Older saved states may still contain one combined GenreContext.
+        if (!string.IsNullOrWhiteSpace(state.GenreSongContext))
+        {
+            b.AppendLine()
+                .AppendLine("SELECTED SONG-DESIGN GENRE GUIDANCE — SHARE WITH DIRECTOR AND COMPOSER")
+                .AppendLine(state.GenreSongContext);
+        }
+        else if (!string.IsNullOrWhiteSpace(state.GenreContext))
+        {
+            b.AppendLine()
+                .AppendLine("SELECTED GENRE GUIDANCE — LEGACY COMBINED CONTEXT")
+                .AppendLine(state.GenreContext);
+        }
+
+        if (drumLane && !string.IsNullOrWhiteSpace(state.GenreDrumContext))
+        {
+            b.AppendLine()
+                .AppendLine("SELECTED DRUM GENRE GUIDANCE — DRUM LANE ONLY")
+                .AppendLine(state.GenreDrumContext);
+        }
 
         if (!string.IsNullOrWhiteSpace(state.ComposerDesign))
         {
             b.AppendLine()
                 .AppendLine("GLOBAL COMPOSER DESIGN PASS — SHARED MUSICAL DNA FOR EVERY TRACK")
                 .AppendLine("This non-track-scoped material was composed before lane generation. Treat its exact Resonator melody seed, motifs, chord progression, answers, contrasts, continuations, key/AHD plan, and emotional-note palette as reusable source material for this lane. Adapt it to the lane role instead of ignoring it. Pitched lanes may quote or transform the pitches directly; bass/harmony should support its harmonic/emotional relationships; drums should reflect its rhythmic statement/response shapes where appropriate.")
-                .AppendLine(Clip(state.ComposerDesign, MaxComposerDesignChars));
+                .AppendLine(state.ComposerDesign);
         }
 
         b.AppendLine()
@@ -117,29 +158,28 @@ public static class SongGenerationProvisioner
         }
 
         b.AppendLine().AppendLine("CURRENT SECTION")
-            .AppendLine(Clip(section.Plan, MaxSectionMemoryChars));
+            .AppendLine(section.Plan);
 
         var priorNotes = state.Sections
             .Take(currentIndex + 1)
             .Where(s => !string.IsNullOrWhiteSpace(s.MemoryNotes))
-            .TakeLast(4)
             .ToList();
         if (priorNotes.Count != 0)
         {
             b.AppendLine().AppendLine("RECENT SONG MEMORY NOTES");
             foreach (var s in priorNotes)
-                b.AppendLine($"[{s.Id} — {s.Title}]\n{Clip(s.MemoryNotes, 2400)}");
+                b.AppendLine($"[{s.Id} — {s.Title}]\n{s.MemoryNotes}");
         }
 
-        var memories = state.MusicalMemories.TakeLast(MaxMusicalMemories).ToList();
+        var memories = state.MusicalMemories.ToList();
         if (memories.Count != 0)
         {
             b.AppendLine().AppendLine("EXACT MUSICAL MEMORY — USE WHEN RECALLING, ANSWERING, COUNTERING, OR TRANSFORMING MATERIAL");
             foreach (var m in memories)
             {
                 b.Append($"- [{m.Kind}] {m.Name}");
-                if (!string.IsNullOrWhiteSpace(m.Notation)) b.Append($" = `{Clip(m.Notation, 700)}`");
-                if (!string.IsNullOrWhiteSpace(m.Description)) b.Append($" — {Clip(m.Description, 700)}");
+                if (!string.IsNullOrWhiteSpace(m.Notation)) b.Append($" = `{m.Notation}`");
+                if (!string.IsNullOrWhiteSpace(m.Description)) b.Append($" — {m.Description}");
                 if (!string.IsNullOrWhiteSpace(m.SourceLane)) b.Append($" ({m.SourceLane})");
                 b.AppendLine();
             }
@@ -148,7 +188,7 @@ public static class SongGenerationProvisioner
         if (!string.IsNullOrWhiteSpace(state.PendingComposerNotes))
         {
             b.AppendLine().AppendLine("OPEN COMPOSER COMMITMENTS — MUST BE FULFILLED OR CARRIED FORWARD")
-                .AppendLine(Clip(state.PendingComposerNotes, MaxPendingComposerNotesChars))
+                .AppendLine(state.PendingComposerNotes)
                 .AppendLine("These are active promises made by earlier composer calls. Fulfill any commitment that belongs to the current section/lane. If a commitment is not yet due or cannot be fulfilled by this lane, copy it forward in the outgoing Next composer notes. Never silently drop an unfulfilled commitment.");
         }
 
@@ -168,7 +208,7 @@ public static class SongGenerationProvisioner
             string tagged = $"[{laneName}]\n{stableMemory}";
             section.MemoryNotes = string.IsNullOrWhiteSpace(section.MemoryNotes)
                 ? tagged
-                : Clip(section.MemoryNotes + "\n\n" + tagged, MaxSectionMemoryChars);
+                : section.MemoryNotes + "\n\n" + tagged;
         }
 
         AddMemoryBlock(state, sectionId, laneName, block, "Melody notes", "melody");
@@ -182,7 +222,7 @@ public static class SongGenerationProvisioner
         {
             state.PendingComposerNotes = IsNoOpenCommitment(nextComposerNotes)
                 ? ""
-                : Clip(nextComposerNotes.Trim(), MaxPendingComposerNotesChars);
+                : nextComposerNotes.Trim();
         }
 
         int index = state.Sections.FindIndex(s => string.Equals(s.Id, section.Id, StringComparison.OrdinalIgnoreCase));
@@ -295,8 +335,6 @@ public static class SongGenerationProvisioner
                 SourceLane = laneName
             });
         }
-        if (state.MusicalMemories.Count > 128)
-            state.MusicalMemories.RemoveRange(0, state.MusicalMemories.Count - 128);
     }
 
     private static string BuildStableMemoryBlock(string text)
@@ -323,5 +361,4 @@ public static class SongGenerationProvisioner
     private static bool IsNoOpenCommitment(string value)
         => string.IsNullOrWhiteSpace(value) || Regex.IsMatch(value.Trim(), @"^(?:\(?(?:none|nothing)\)?[.!]?|no\s+(?:open\s+)?(?:composer\s+)?(?:notes|commitments|obligations)[.!]?)$", RegexOptions.IgnoreCase);
 
-    private static string Clip(string value, int max) => value.Length <= max ? value : value[..max] + "…";
 }

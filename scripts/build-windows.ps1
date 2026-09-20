@@ -1,35 +1,103 @@
-param([string]$InstallDir = "$env:LOCALAPPDATA\Wds\Resone", [string]$SixStarsRuntimeRoot = "", [switch]$CustomerRelease, [switch]$ForceDeploy, [string]$LicensePublicKeyFile = "", [string]$LicenseApiUrl = "", [string]$RuntimeManifest = "")
+param([string]$InstallDir = "$env:LOCALAPPDATA\Wds\Resone", [string]$SixStarsRuntimeRoot = "", [switch]$CustomerRelease, [switch]$ForceDeploy, [switch]$LocalInstallerTest, [string]$LocalTestLicenseKeyFile = "", [string]$LicensePublicKeyFile = "", [string]$InstructionKeyFile = "", [string]$LicenseApiUrl = "", [string]$RuntimeManifest = "")
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
+& (Join-Path $PSScriptRoot 'clean-instruction-assets.ps1') -Root $Root
 $SourceRuntimeManifest = Get-Content (Join-Path $Root 'config/runtime.json') -Raw | ConvertFrom-Json
+$SourceSettings = Get-Content (Join-Path $Root 'config/appsettings.json') -Raw | ConvertFrom-Json
 function DependencyPin([string]$Name) {
   $Pin = $SourceRuntimeManifest.dependencyPins.$Name
   if (-not $Pin -or [string]::IsNullOrWhiteSpace($Pin.repository) -or [string]::IsNullOrWhiteSpace($Pin.gitRef)) { throw "config/runtime.json is missing dependency pin: $Name" }
   return $Pin
 }
 $PublishFlags = @()
+if ($LocalInstallerTest) {
+  if ([string]::IsNullOrWhiteSpace($LocalTestLicenseKeyFile)) { $LocalTestLicenseKeyFile = Join-Path $Root 'installer/local-test-license.txt' }
+  if (!(Test-Path $LocalTestLicenseKeyFile)) { throw "Local installer test key file not found: $LocalTestLicenseKeyFile" }
+  $PublishFlags += @('-p:LocalInstallerTest=true',"-p:LocalTestLicenseKeyFile=$([System.IO.Path]::GetFullPath($LocalTestLicenseKeyFile))")
+}
 $RunningLauncher = @(Get-Process -Name 'wds.resone.launcher' -ErrorAction SilentlyContinue)
 $DeployInstall = $CustomerRelease -or $ForceDeploy -or $RunningLauncher.Count -eq 0
 if (!$DeployInstall) {
   Write-Host 'Resone launcher is running. Building into build\ only and leaving the live installation untouched.' -ForegroundColor Yellow
   Write-Host 'Close the launcher and run the build again to deploy, or pass -ForceDeploy if you intentionally want a live deploy.' -ForegroundColor DarkGray
 }
+$ReleaseLicensingEnabled = $false
+$ReleaseEncryptInstructions = $false
 if ($CustomerRelease) {
-  if (!(Test-Path $LicensePublicKeyFile)) { throw 'Supply -LicensePublicKeyFile with your Cloudflare signing public JWK.' }
-  $PublicKey = Get-Content $LicensePublicKeyFile -Raw | ConvertFrom-Json
-  if ($PublicKey.d -or $PublicKey.kty -ne 'EC' -or $PublicKey.crv -ne 'P-256') { throw 'Only a PUBLIC P-256 JWK may be embedded.' }
-  if (!$LicenseApiUrl.StartsWith('https://')) { throw 'Supply -LicenseApiUrl with the deployed HTTPS licensing endpoint.' }
   if (!(Test-Path $RuntimeManifest)) { throw 'Supply -RuntimeManifest with configured, hashed engine packs and models.' }
   $Manifest = Get-Content $RuntimeManifest -Raw | ConvertFrom-Json
-  if ($Manifest.useExistingStack -or $Manifest.provisionAiRuntime -eq $false -or !$Manifest.requireHashes) { throw 'Customer manifest must own/provision its stack and require hashes.' }
-  foreach ($Item in @($Manifest.enginePacks | Where-Object enabled) + @($Manifest.models | Where-Object enabled)) {
-    if ([string]::IsNullOrWhiteSpace($Item.id) -or [string]::IsNullOrWhiteSpace($Item.version)) { throw 'Every enabled AI package needs id and version.' }
-    if ($Item.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or !$Item.url.StartsWith('https://')) { throw 'Every enabled AI download needs HTTPS and its actual SHA256.' }
+
+  # Older release manifests implied both protections were enabled. New manifests make
+  # licensing and instruction encryption independently explicit.
+  $ReleaseLicensingEnabled = $true
+  $ReleaseEncryptInstructions = $true
+  if ($Manifest.PSObject.Properties['release']) {
+    if ($Manifest.release.PSObject.Properties['licensingEnabled']) { $ReleaseLicensingEnabled = [bool]$Manifest.release.licensingEnabled }
+    if ($Manifest.release.PSObject.Properties['encryptInstructions']) { $ReleaseEncryptInstructions = [bool]$Manifest.release.encryptInstructions }
   }
-  if (!($Manifest.enginePacks | Where-Object { $_.enabled -eq $true -and $_.rid -eq 'win-x64' -and $_.component -eq 'llm' })) { throw 'Supply at least one enabled Windows x64 LLM engine pack.' }
+  if ($ReleaseEncryptInstructions -and !$ReleaseLicensingEnabled) {
+    throw 'release.encryptInstructions=true requires release.licensingEnabled=true because the protected-instruction key is delivered by the licensing service.'
+  }
+
+  if ($ReleaseLicensingEnabled) {
+    if (!(Test-Path $LicensePublicKeyFile)) { throw 'Licensing is enabled; supply -LicensePublicKeyFile with your Cloudflare signing public JWK.' }
+    $PublicKey = Get-Content $LicensePublicKeyFile -Raw | ConvertFrom-Json
+    if ($PublicKey.d -or $PublicKey.kty -ne 'EC' -or $PublicKey.crv -ne 'P-256') { throw 'Only a PUBLIC P-256 JWK may be embedded.' }
+    if ([string]::IsNullOrWhiteSpace($LicenseApiUrl) -or !$LicenseApiUrl.StartsWith('https://')) { throw 'Licensing is enabled; supply -LicenseApiUrl with the deployed HTTPS licensing endpoint.' }
+  }
+  if ($ReleaseEncryptInstructions) {
+    if (!(Test-Path $InstructionKeyFile)) { throw 'Instruction encryption is enabled; supply -InstructionKeyFile with the same 32-byte base64 key stored by the licensing service.' }
+    try { $InstructionKeyBytes = [Convert]::FromBase64String((Get-Content $InstructionKeyFile -Raw).Trim()) } catch { throw 'InstructionKeyFile must contain valid base64.' }
+    if ($InstructionKeyBytes.Length -ne 32) { throw 'InstructionKeyFile must decode to exactly 32 bytes.' }
+    [Array]::Clear($InstructionKeyBytes,0,$InstructionKeyBytes.Length)
+  }
+  if ($Manifest.useExistingStack -or $Manifest.provisionAiRuntime -eq $false -or !$Manifest.requireHashes) { throw 'Customer manifest must own/provision its stack and require hashes.' }
+  $EngineDownloads = @()
+  $HasWindowsLlm = $false
+  $ExpectedLlmDirectory = [string]$SourceSettings.llamaEngineDirectories.'win-x64'
+  $ExpectedLlmModelPath = [string]$SourceSettings.nativeModelPath
+  foreach ($PackEntry in @($Manifest.enginePacks)) {
+    $IsCompact = $null -ne $PackEntry.cpu -or $null -ne $PackEntry.cuda -or $null -ne $PackEntry.vulkan
+    if ($IsCompact) {
+      foreach ($Backend in @('cpu','cuda','vulkan')) {
+        $BackendPack = $PackEntry.$Backend
+        if ($null -eq $BackendPack) { continue }
+        foreach ($Component in @('llm','tts','asr')) {
+          $Item = $BackendPack.$Component
+          if ($null -eq $Item -or $Item.enabled -eq $false) { continue }
+          $EngineDownloads += $Item
+          if ($Component -eq 'llm') {
+            $HasWindowsLlm = $true
+            if ([string]::IsNullOrWhiteSpace($Item.directory)) { throw "Enabled $Backend LLM pack must declare directory explicitly." }
+            if ($Item.directory.Replace('\','/') -ne $ExpectedLlmDirectory.Replace('\','/')) { throw "Enabled $Backend LLM pack directory '$($Item.directory)' does not match appsettings llamaEngineDirectories win-x64 '$ExpectedLlmDirectory'." }
+          }
+        }
+      }
+    } elseif ($PackEntry.enabled -ne $false) {
+      $EngineDownloads += $PackEntry
+      if ($PackEntry.rid -eq 'win-x64' -and $PackEntry.component -eq 'llm') { $HasWindowsLlm = $true }
+    }
+  }
+  foreach ($Item in $EngineDownloads) {
+    if ($Item.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or [string]::IsNullOrWhiteSpace($Item.url) -or !$Item.url.StartsWith('https://')) { throw 'Every enabled AI engine download needs HTTPS and its actual SHA256.' }
+    foreach ($Extra in @($Item.additionalArchives)) {
+      if ($null -eq $Extra) { continue }
+      if ($Extra.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or [string]::IsNullOrWhiteSpace($Extra.url) -or !$Extra.url.StartsWith('https://')) { throw 'Every enabled AI engine companion archive needs HTTPS and its actual SHA256.' }
+    }
+  }
+  $HasConfiguredLlmModel = $false
+  foreach ($Item in @($Manifest.models | Where-Object { $_.enabled -ne $false })) {
+    if ([string]::IsNullOrWhiteSpace($Item.id) -or [string]::IsNullOrWhiteSpace($Item.version)) { throw 'Every enabled AI model needs id and version.' }
+    if ($Item.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or [string]::IsNullOrWhiteSpace($Item.url) -or !$Item.url.StartsWith('https://')) { throw 'Every enabled AI model download needs HTTPS and its actual SHA256.' }
+    if ($Item.path.Replace('\','/') -eq $ExpectedLlmModelPath.Replace('\','/')) { $HasConfiguredLlmModel = $true }
+  }
+  if (!$HasWindowsLlm) { throw 'Supply at least one enabled Windows x64 LLM engine pack.' }
+  if (!$HasConfiguredLlmModel) { throw "Enable the configured LLM model '$ExpectedLlmModelPath' in the release manifest." }
   if (Test-Path $InstallDir) { if (Get-ChildItem $InstallDir -Force) { throw 'Use an empty staging directory for CustomerRelease so old instructions/logs cannot ship.' } }
   if ($SixStarsRuntimeRoot) { throw 'Customer releases use downloadable engine packs; do not bundle Six Stars runtime folders.' }
-  $PublishFlags = @('-p:CustomerRelease=true',"-p:LicensePublicKeyFile=$([System.IO.Path]::GetFullPath($LicensePublicKeyFile))")
+  $PublishFlags += @('-p:CustomerRelease=true',"-p:ResoneLicensingEnabled=$($ReleaseLicensingEnabled.ToString().ToLowerInvariant())","-p:ResoneEncryptInstructions=$($ReleaseEncryptInstructions.ToString().ToLowerInvariant())")
+  if ($ReleaseLicensingEnabled) { $PublishFlags += "-p:LicensePublicKeyFile=$([System.IO.Path]::GetFullPath($LicensePublicKeyFile))" }
+  if ($ReleaseEncryptInstructions) { $PublishFlags += "-p:InstructionKeyFile=$([System.IO.Path]::GetFullPath($InstructionKeyFile))" }
   foreach ($Dir in @('build/api','build/launcher','build/updater')) { if (Test-Path "$Root/$Dir") { Remove-Item "$Root/$Dir" -Recurse -Force } }
 }
 function Run([string]$Exe, [string[]]$Arguments) { & $Exe @Arguments; if ($LASTEXITCODE -ne 0) { throw "$Exe failed ($LASTEXITCODE)" } }
@@ -174,7 +242,7 @@ foreach ($Process in $RunningLauncher) {
 }
 
 $SkipLauncherPublish = $false
-if ($RunningLauncher.Count -gt 0 -and !$CustomerRelease) {
+if ($RunningLauncher.Count -gt 0 -and !$CustomerRelease -and !$LocalInstallerTest) {
   $LauncherCandidates = @($LauncherPrimaryDir)
   if ($LauncherTargetLocked) { $LauncherCandidates += $LauncherNextDir }
   foreach ($Candidate in $LauncherCandidates) {
@@ -264,14 +332,20 @@ Copy-Item "$Root/src/wds.resone.ui/resources/Resone.ico" $InstallDir -Force
 Copy-Item "$Root/build/ui/out/Resone.exe" "$InstallDir/wds.resone.ui.exe" -Force
 Copy-Item $BridgeDll "$InstallDir/resone_llama_bridge.dll" -Force
 Copy-Item $VocalDll $InstallDir -Force
-Copy-Item "$Root/third_party/vcpkg/installed/x64-windows/bin/*.dll" $InstallDir -Force
+# Keep FluidSynth and its dynamically-linked runtime dependencies isolated from the
+# Resone application root. This also keeps the LGPL component visibly replaceable.
+$FluidRuntimeDir = Join-Path $InstallDir 'third_party/libfluidsynth'
+New-Item -ItemType Directory -Force $FluidRuntimeDir | Out-Null
+Copy-Item "$Root/third_party/vcpkg/installed/x64-windows/bin/*.dll" $FluidRuntimeDir -Force
 # FluidSynth uses different DLL basenames across distributions. Keep our ABI loader's name stable.
-$Fluid = Get-ChildItem "$InstallDir/*fluidsynth*.dll" | Select-Object -First 1
+$Fluid = Get-ChildItem "$FluidRuntimeDir/*fluidsynth*.dll" | Select-Object -First 1
 if (!$Fluid) { throw 'FluidSynth runtime DLL missing' }
-if ($Fluid.Name -ne 'libfluidsynth-3.dll') { Copy-Item $Fluid.FullName "$InstallDir/libfluidsynth-3.dll" -Force }
+if ($Fluid.Name -ne 'libfluidsynth-3.dll') { Copy-Item $Fluid.FullName "$FluidRuntimeDir/libfluidsynth-3.dll" -Force }
 # Copy directory contents explicitly so repeated installs cannot nest assets/assets.
 New-Item -ItemType Directory -Force "$InstallDir/assets" | Out-Null
 Copy-Item "$LauncherOutputDir/assets/*" "$InstallDir/assets" -Recurse -Force
+# Reused staging directories can retain obsolete instruction files from older builds.
+& (Join-Path $PSScriptRoot 'clean-instruction-assets.ps1') -Root $InstallDir
 if (!$CustomerRelease -and !(Test-Path "$InstallDir/assets/Instructions/Music/music-composition.json")) {
   throw 'Music instructions were not staged into the installation directory'
 }
@@ -286,7 +360,6 @@ if ($Settings.sttUrl -in @('http://127.0.0.1:8100/inference','http://localhost:8
   $Settings | ConvertTo-Json -Depth 32 | Set-Content $SettingsPath -Encoding UTF8
 }
 # Legacy LLM log settings point at the same daily-log directory used by the launcher/updater.
-$SourceSettings = Get-Content "$Root/config/appsettings.json" -Raw | ConvertFrom-Json
 # Local inference mode belongs to the source build configuration. Older installers
 # preserved appsettings.json wholesale, which meant changing nativeInference in the
 # source could leave the installed launcher silently using llmUrl/port 8080.
@@ -327,7 +400,7 @@ foreach ($Service in $Runtime.services) {
   }
 }
 $Runtime | ConvertTo-Json -Depth 32 | Set-Content $RuntimePath -Encoding UTF8
-Copy-Item "$Root/docs/THIRD-PARTY.md" "$InstallDir/licenses" -Force
+Copy-Item "$Root/docs/third-party-dependencies.md" "$InstallDir/licenses" -Force
 Get-ChildItem "$Root/third_party/vcpkg/installed/x64-windows/share" -Filter copyright -Recurse | ForEach-Object { Copy-Item $_.FullName "$InstallDir/licenses/$($_.Directory.Name)-copyright.txt" -Force }
 Copy-Item "$Root/third_party/iPlug2/LICENSE.txt" "$InstallDir/licenses/iPlug2.txt" -Force
 Copy-Item "$Root/third_party/iPlug2/Dependencies/IPlug/VST3_SDK/LICENSE.txt" "$InstallDir/licenses/VST3.txt" -Force
@@ -346,9 +419,16 @@ if ($CustomerRelease) {
   Copy-Item $RuntimeManifest "$InstallDir/config/runtime.json" -Force
   $Settings.nativeInference = $true
   $Settings | Add-Member -NotePropertyName useLocalInference -NotePropertyValue $true -Force
+  # Never ship raw LLM request/response logging in customer releases.
   $Settings.logLlmRequests = $false
   $Settings | ConvertTo-Json -Depth 32 | Set-Content "$InstallDir/config/appsettings.json" -Encoding UTF8
-  @{ enabled=$true; url=$LicenseApiUrl } | ConvertTo-Json | Set-Content "$InstallDir/config/licensing.json" -Encoding UTF8
+  $ReleaseLicenseUrl = if ($ReleaseLicensingEnabled) { $LicenseApiUrl } else { '' }
+  @{ enabled=$ReleaseLicensingEnabled; url=$ReleaseLicenseUrl } | ConvertTo-Json | Set-Content "$InstallDir/config/licensing.json" -Encoding UTF8
   Remove-Item "$InstallDir/config/runtime.release.example.json" -ErrorAction SilentlyContinue
-  if (Test-Path "$InstallDir/assets/Instructions") { throw 'Loose instructions detected in release staging.' }
+  $InstructionRoot = "$InstallDir/assets/Instructions/Music"
+  if ($ReleaseEncryptInstructions) {
+    if (Test-Path "$InstallDir/assets/Instructions") { throw 'Loose instructions detected while release.encryptInstructions=true.' }
+  } elseif (!(Test-Path "$InstructionRoot/music-composition.json")) {
+    throw 'Plain production instructions were not staged while release.encryptInstructions=false.'
+  }
 }

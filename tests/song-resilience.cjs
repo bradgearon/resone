@@ -19,39 +19,40 @@ let serial=0,lastStatus='';const sent=[];const clone=x=>JSON.parse(JSON.stringif
 ${helpers}
 ${receive}
 function assert(x,m='song resilience regression'){if(!x)throw Error(m)}
-startSongGeneration('battle');
-let id=pending.id;
 const state={brief:'battle',design:'Producer notes',tempo:120,meter:'4/4',targetBars:8,currentSectionIndex:0,musicalMemories:[],sections:[
  {id:'intro',title:'Intro',plan:'SECTION 1 [intro] — Intro\\nBars: 4',bars:4,startBar:0,memoryNotes:''},
  {id:'battle',title:'Battle',plan:'SECTION 2 [battle] — Battle\\nBars: 4',bars:4,startBar:4,memoryNotes:''}
 ]};
+
+// A server/composer error must preserve this section and continue to the next lane without retrying.
+startSongGeneration('battle'); let id=pending.id;
 receive({op:'songDesign',requestId:id,payload:{design:'Producer notes',state}});
-// intro melody succeeds
-id=pending.id; receive({op:'songChunk',requestId:id,payload:{tracks:[{laneId:'a',notation:'C4',notes:[{pitch:60,start:0,duration:1}]}],songState:state}});
-assert(song.lanes[0].notes.some(n=>n.pitch===60&&n.start===0),'successful first chunk missing');
-// intro bass fails at worker/API level: should move to battle melody, not rollback song.
-id=pending.id; receive({op:'error',requestId:id,payload:{message:'Invalid arrangement: No playable tracks.'}});
-assert(songRun && pending && pending.kind==='songChunk','song run died after recoverable chunk error');
-assert(pending.sectionId==='battle'&&pending.laneId==='a','did not advance after failed chunk');
-assert(song.lanes[0].notes.some(n=>n.pitch===60),'earlier successful chunk was rolled back');
-// battle melody returns malformed payload: should also skip and continue to battle bass.
-id=pending.id; receive({op:'songChunk',requestId:id,payload:{tracks:[],songState:state}});
-assert(songRun && pending && pending.sectionId==='battle'&&pending.laneId==='b','invalid chunk payload killed song instead of skipping');
-// last chunk succeeds and song finishes with partial results retained.
-id=pending.id; receive({op:'songChunk',requestId:id,payload:{tracks:[{laneId:'b',notation:'G2',notes:[{pitch:43,start:0,duration:1}]}],songState:state}});
-assert(songRun===null&&pending===null,'song did not finish after recoverable failures');
-assert(song.lanes[0].notes.some(n=>n.pitch===60&&n.start===0),'first successful chunk lost at finish');
-assert(song.lanes[1].notes.some(n=>n.pitch===43&&n.start===16),'later successful chunk not retained');
-assert(/2 skipped generations/.test(lastStatus),'final status did not report skipped chunks');
-console.log('PASS failed song chunks are skipped while successful chunks remain');
+id=pending.id; const firstRequestCount=sent.filter(x=>x.op==='songChunk').length;
+receive({op:'error',requestId:id,payload:{message:'Invalid arrangement: no playable notes'}});
+assert(songRun&&pending&&pending.sectionId==='intro'&&pending.laneId==='b','failed chunk did not continue to next planned lane');
+assert(sent.filter(x=>x.op==='songChunk').length===firstRequestCount+1,'failed chunk was retried instead of advancing once');
+assert(songRun.emptyChunks===1,'failed chunk was not recorded as preserved/empty');
+assert(songRun.recoveryWarnings.some(x=>/preserved and generation continued/.test(x)),'failure recovery warning missing');
+
+// An explicit empty track is also accepted and advances, preserving preexisting notes.
+song.lanes[1].notes=[{pitch:40,start:0,duration:1}];
+id=pending.id;
+receive({op:'songChunk',requestId:id,payload:{tracks:[{laneId:'b',notation:'',notes:[]}],warnings:['No playable MIDI could be recovered for Bass; preserved the section as existing music/silence and continued.'],songState:state}});
+assert(song.lanes[1].notes.some(n=>n.pitch===40),'empty composer result erased existing section music');
+assert(songRun&&pending&&pending.sectionId==='battle'&&pending.laneId==='a','empty track did not continue through plan');
+
+// A partially recovered payload keeps every valid note and advances normally.
+id=pending.id;
+receive({op:'songChunk',requestId:id,payload:{tracks:[{laneId:'a',notation:'C4 BAD D4',notes:[{pitch:60,start:0,duration:1},{pitch:62,start:2,duration:1}]}],warnings:['Recovered Melody: Skipped invalid event BAD'],songState:state}});
+assert(song.lanes[0].notes.some(n=>n.pitch===60)&&song.lanes[0].notes.some(n=>n.pitch===62),'best-effort notes were not kept');
+assert(songRun&&pending&&pending.sectionId==='battle'&&pending.laneId==='b','recovered chunk did not advance exactly once');
+console.log('PASS song chunks salvage/continue without retrying or aborting');
 `);
 
-// Static safety checks for the C# notation parser. The concrete parser behavior is
-// compiled/tested by the Windows build; these assertions prevent the tolerant path
-// and standard ppp/fff dynamics from being accidentally removed in source edits.
 const parser=fs.readFileSync(path.join(__dirname,'../src/wds.resone.resonator/ResonatorParser.cs'),'utf8');
 if(!/ParseSingleEventTolerant/.test(parser)) throw Error('missing tolerant event parser');
-if(!/Skipped invalid event/.test(parser)) throw Error('missing invalid-token warning');
-if(!/"ppp"\s*=>\s*28/.test(parser)||!/"fff"\s*=>\s*127/.test(parser)) throw Error('ppp/fff dynamics missing');
+if(!/Skipped invalid event/.test(parser)||!/Recovered invalid token/.test(parser)) throw Error('missing best-effort parser warnings');
 const composer=fs.readFileSync(path.join(__dirname,'../src/wds.resone.api/ArrangementComposer.cs'),'utf8');
-if(!/generated\.Warnings/.test(composer)||!/Recovered /.test(composer)) throw Error('parser warnings are not surfaced');
+if(!/ExtractPlayableFallback/.test(composer)) throw Error('missing last-resort explicit note/chord salvage');
+if(!/allowEmptyTracks: songContext is not null/.test(composer)) throw Error('song chunks do not allow preserved empty sections');
+if(!/preserved the section as existing music\/silence and continued/.test(composer)) throw Error('empty song-section continuation warning missing');

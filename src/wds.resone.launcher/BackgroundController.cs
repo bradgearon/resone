@@ -13,7 +13,29 @@ internal sealed class BackgroundController(string root,string aiRoot,HttpClient 
   var path=candidates.FirstOrDefault(File.Exists)??throw new FileNotFoundException("Standalone UI not found. Expected wds.resone.ui.exe beside the launcher or build/ui/out/Resone.exe.");
   var start=new ProcessStartInfo(path){UseShellExecute=false,WorkingDirectory=root};start.Environment["RESONE_HOME"]=root;start.Environment[Wds.Resone.Api.AiRuntimeRoot.EnvironmentVariable]=aiRoot;using var p=Process.Start(start);
  }
- public async Task<string> EnsureAsync(CancellationToken token){await gate.WaitAsync(token);try{if(restarts>3)throw new InvalidOperationException("Repeated native crashes. Toggle the AI stack off/on after correcting the runtime.");if(!enabled)throw new InvalidOperationException("AI stack is off. Enable it from the Resone tray menu.");return await StartLocked(token);}finally{gate.Release();}}
+ public async Task EnsureRuntimeComponentAsync(string component,CancellationToken token){await gate.WaitAsync(token);try{
+  if(!enabled)throw new InvalidOperationException("AI stack is off. Enable it from the Resone tray menu.");
+  if(supervisor==null){supervisor=new(root,aiRoot,http,Report);if(!skipServices)await supervisor.StartAsync(token);}
+  await supervisor.EnsureComponentAsync(component,token);
+ }finally{gate.Release();}}
+ public async Task<string> EnsureAsync(CancellationToken token){await gate.WaitAsync(token);try{
+  if(restarts>3)throw new InvalidOperationException("Repeated native crashes. Toggle the AI stack off/on after correcting the runtime.");
+  if(!enabled)throw new InvalidOperationException("AI stack is off. Enable it from the Resone tray menu.");
+  if(Wds.Resone.Api.AiRuntimeIntegrity.IsLlmReverificationRequested(aiRoot) && worker is {HasExited:false}){
+   Report("LLM runtime recheck requested; restarting the AI stack for integrity verification.");
+   StopLocked();restarts=0;
+  }
+  // Re-check the cheap engine/model receipts whenever a UI asks for the stack. If the user
+  // deleted Gemma while the launcher stayed resident, this immediately restores it instead
+  // of returning an old ready worker state. Missing files always bypass the receipt fast path.
+  if(supervisor is not null)await supervisor.EnsureComponentAsync("llm",token);
+  try{return await StartLocked(token);}
+  catch when(Wds.Resone.Api.AiRuntimeIntegrity.IsLlmReverificationRequested(aiRoot)){
+   Report("LLM startup failed; rechecking the engine pack and model before one automatic retry.");
+   ResetSupervisorLocked();
+   return await StartLocked(token);
+  }
+ }finally{gate.Release();}}
  private async Task<string> StartLocked(CancellationToken token){
   if(worker is {HasExited:false})return secret;
   if(supervisor==null){supervisor=new(root,aiRoot,http,Report);try{if(!skipServices)await supervisor.StartAsync(token);}catch{supervisor.Dispose();supervisor=null;throw;}}
@@ -36,10 +58,15 @@ internal sealed class BackgroundController(string root,string aiRoot,HttpClient 
   await gate.WaitAsync();try{
    if(!ReferenceEquals(worker,exited)||!enabled||shutdown.IsCancellationRequested)return;
    worker=null;exited.Dispose();if(++restarts>3){Console.Error.WriteLine("AI worker repeatedly exited. Use tray Toggle AI stack to retry after checking the runtime.");return;}
+   if(Wds.Resone.Api.AiRuntimeIntegrity.IsLlmReverificationRequested(aiRoot)){
+    Report("LLM worker failure requested an integrity recheck; revalidating runtime before restart.");
+    ResetSupervisorLocked();
+   }
    try{await StartLocked(shutdown.Token);}catch(Exception e){Console.Error.WriteLine("AI restart failed: "+e.Message);}
   }finally{gate.Release();}
  }
  public async Task ToggleAsync(){await gate.WaitAsync();try{if(worker is {HasExited:false}){enabled=false;StopLocked();}else{enabled=true;restarts=0;await StartLocked(shutdown.Token);}}catch(Exception e){Console.Error.WriteLine(e.Message);}finally{gate.Release();}}
- private void StopLocked(){var old=worker;worker=null;try{if(old is {HasExited:false})old.Kill(true);}catch{}old?.Dispose();supervisor?.Dispose();supervisor=null;}
+ private void ResetSupervisorLocked(){supervisor?.Dispose();supervisor=null;}
+ private void StopLocked(){var old=worker;worker=null;try{if(old is {HasExited:false})old.Kill(true);}catch{}old?.Dispose();ResetSupervisorLocked();}
  public void Dispose(){gate.Wait();try{enabled=false;StopLocked();}finally{gate.Release();}}
 }

@@ -28,6 +28,7 @@ public static class MusicNarrativePlanner
         double existingLengthBeats,
         string songGenerationContext,
         string composerOverview,
+        string laneGenreContext,
         CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(userRequest))
@@ -110,7 +111,7 @@ Required-gesture summary: a compact checklist of the interval/perspective gestur
                 .AppendLine("Original brief: " + (string.IsNullOrWhiteSpace(originalBrief) ? "(none)" : originalBrief.Trim()))
                 .AppendLine("Previous update requests: " + (promptHistory.Count == 0 ? "(none)" : string.Join(" -> ", promptHistory)))
                 .AppendLine("Existing Resonator notation / timing:")
-                .AppendLine(existingNotation.Length > 16000 ? existingNotation[..16000] : existingNotation)
+                .AppendLine(existingNotation)
                 .AppendLine();
         }
 
@@ -118,7 +119,15 @@ Required-gesture summary: a compact checklist of the interval/perspective gestur
         {
             user.AppendLine("FULL SONG CONTEXT")
                 .AppendLine("The following context comes from Resone's deterministic song-generation provisioner. Use it to keep this section consistent with the larger piece. Do not rewrite the global song design; plan the selected lane/chunk so it fulfills the assigned section and preserves exact musical memories when they are called for.")
-                .AppendLine(songGenerationContext.Length > 24000 ? songGenerationContext[..24000] : songGenerationContext)
+                .AppendLine(songGenerationContext)
+                .AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(laneGenreContext))
+        {
+            user.AppendLine("LANE GENRE GUIDANCE")
+                .AppendLine("Use this compact retrieved grammar for the current lane. The original user request and existing material remain authoritative.")
+                .AppendLine(laneGenreContext)
                 .AppendLine();
         }
 
@@ -126,7 +135,7 @@ Required-gesture summary: a compact checklist of the interval/perspective gestur
         {
             user.AppendLine("EXISTING SONG COMPOSER OVERVIEW")
                 .AppendLine("This is persistent musical DNA from the song's original composer design pass. Use it when planning this revision. Preserve established tonal centers, emotional note palette, motifs, chord relationships, AHD activations, and designed statement/answer/contrast/continuation behavior unless the user's new request explicitly changes them.")
-                .AppendLine(composerOverview.Length > 24000 ? composerOverview[..24000] : composerOverview)
+                .AppendLine(composerOverview)
                 .AppendLine();
         }
 
@@ -148,8 +157,6 @@ Required-gesture summary: a compact checklist of the interval/perspective gestur
 
         if (string.IsNullOrWhiteSpace(narrative))
             throw new InvalidDataException("The music narrative planner returned an empty response.");
-        if (narrative.Length > 24000)
-            narrative = narrative[..24000];
         return narrative;
     }
 

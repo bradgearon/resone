@@ -22,7 +22,6 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
             throw new ArgumentException("Describe the music in 1–12000 characters.");
         bool useAhd = !payload.TryGetProperty("useAhd", out var ahd) || ahd.GetBoolean();
         string composerOverview = payload.TryGetProperty("composerOverview", out var overviewValue) ? overviewValue.GetString() ?? "" : "";
-        if (composerOverview.Length > 24000) composerOverview = composerOverview[..24000];
         return await new ArrangementComposer(http, settings, assetsRoot).ComposeAsync(project, laneId, description, useAhd, composerOverview, token, progress);
     }
 
@@ -38,24 +37,32 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
         bool useAhd = !payload.TryGetProperty("useAhd", out var ahdValue) || ahdValue.GetBoolean();
         bool composerDesignPass = !payload.TryGetProperty("composerDesignPass", out var composerDesignValue) || composerDesignValue.GetBoolean();
         string existingComposerOverview = payload.TryGetProperty("composerOverview", out var existingOverviewValue) ? existingOverviewValue.GetString() ?? "" : "";
-        if (existingComposerOverview.Length > 24000) existingComposerOverview = existingComposerOverview[..24000];
         if (!ResonatorNotationValidator.IsMeter(meter)) throw new ArgumentException("Invalid song meter.");
         if (progress is not null) await progress("Song · Producing outline…").ConfigureAwait(false);
         ILocalChatModelClient client = settings.LocalInferenceEnabled ? new NativeChatClient(settings) : new LocalAiClient(http, settings);
-        string design = await SongCompositionDesigner.CreateAsync(client, description, tempo, meter, targetBars, useAhd, existingComposerOverview, token).ConfigureAwait(false);
+        // Before the producer has chosen an Overall identity, retrieve a best-effort brief from the
+        // user's words. After the producer runs we re-resolve from its identity and use that final
+        // canonical selection for every later composer/director call.
+        var producerGenre = GenreBriefResolver.Resolve(assetsRoot, description);
+        string design = await SongCompositionDesigner.CreateAsync(
+            client, description, tempo, meter, targetBars, useAhd, existingComposerOverview, producerGenre.PromptContext, token).ConfigureAwait(false);
+        string identity = SongCompositionDesigner.ExtractOverallIdentity(design);
+        var selectedGenre = GenreBriefResolver.Resolve(assetsRoot, identity, description);
+        if (!selectedGenre.HasMatch) selectedGenre = producerGenre;
         string composerDesign = existingComposerOverview;
         if (composerDesignPass)
         {
             if (progress is not null) await progress("Song · Composer design pass · motifs, harmony, and responses…").ConfigureAwait(false);
             composerDesign = await SongComposerDesignPass.CreateAsync(
-                client, assetsRoot, description, design, tempo, meter, targetBars, useAhd, existingComposerOverview, token).ConfigureAwait(false);
+                client, assetsRoot, description, design, tempo, meter, targetBars, useAhd, existingComposerOverview, selectedGenre.PromptContext, token).ConfigureAwait(false);
         }
-        var state = SongGenerationProvisioner.Create(description, design, tempo, meter, targetBars, composerDesign);
+        var state = SongGenerationProvisioner.Create(description, design, tempo, meter, targetBars, composerDesign, selectedGenre);
         return new JsonObject
         {
             ["design"] = design,
             ["composerDesign"] = composerDesign,
             ["title"] = state.Title,
+            ["genreId"] = state.GenreId,
             ["state"] = JsonSerializer.SerializeToNode(state, ResoneJson.Default.SongGenerationState)
         };
     }
@@ -72,7 +79,7 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
         if (string.IsNullOrWhiteSpace(description) || description.Length > 12000)
             throw new ArgumentException("Describe this song section/lane in 1–12000 characters.");
         bool useAhd = !payload.TryGetProperty("useAhd", out var ahd) || ahd.GetBoolean();
-        string packet = SongGenerationProvisioner.BuildPacket(state, sectionId, lane.Name);
+        string packet = SongGenerationProvisioner.BuildPacket(state, sectionId, lane.Name, lane.Drums);
         int sectionIndex = Math.Max(0, state.Sections.FindIndex(s => string.Equals(s.Id, sectionId, StringComparison.OrdinalIgnoreCase)));
         Func<string, Task>? songProgress = progress is null ? null : message =>
         {

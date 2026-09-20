@@ -3,9 +3,34 @@
   "main": "src/worker.mjs",
   "compatibility_date": "2026-09-01",
   "workers_dev": true,
-  "triggers": { "crons": ["17 3 * * *"] },
-  "observability": { "enabled": false },
-  "vars": { "LEASE_SECONDS": "604800", "SIGNING_KEY_ID": "resone-1" },
-  "d1_databases": [{ "binding": "DB", "database_name": "resone-licenses", "database_id": "REPLACE_WITH_D1_ID", "migrations_dir": "migrations" }],
-  "ratelimits": [{ "name": "LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } }]
+  "triggers": {
+    "crons": [
+      "17 3 * * *"
+    ]
+  },
+  "observability": {
+    "enabled": false
+  },
+  "vars": {
+    "LEASE_SECONDS": "604800",
+    "SIGNING_KEY_ID": "resone-1"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "resone-licenses",
+      "database_id": "ab45c983-19b3-46b2-a238-314becc2055f",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "LIMITER",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 30,
+        "period": 60
+      }
+    }
+  ]
 }

@@ -57,6 +57,7 @@ if (settings.LocalInferenceEnabled)
     catch (Exception e)
     {
         startupTrace.Write("inference-failed", e.ToString());
+        AiRuntimeIntegrity.RequestLlmReverification($"Worker startup: {e.GetType().Name}: {e.Message}");
         throw new InvalidOperationException("Unable to start local llama.cpp inference: " + e.Message + $". Startup log: {startupTrace.Path}", e);
     }
 }
@@ -202,7 +203,7 @@ app.Map("/ws", async context =>
     Task job = Task.CompletedTask;
     try
     {
-        await Send("ready", "", new JsonObject { ["message"] = "Resone Forge ready", ["logging"] = inferenceDiagnostics + ". " + logDiagnostics + $". Serving PID: {Environment.ProcessId}; executable: {Environment.ProcessPath}" });
+        await Send("ready", "", new JsonObject { ["message"] = "Resone Forge ready", ["licensingEnabled"] = licensing.Enabled, ["logging"] = inferenceDiagnostics + ". " + logDiagnostics + $". Serving PID: {Environment.ProcessId}; executable: {Environment.ProcessPath}" });
         var buffer = new byte[16384];
         while (!stop.IsCancellationRequested)
         {

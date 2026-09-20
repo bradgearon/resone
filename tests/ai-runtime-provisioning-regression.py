@@ -20,14 +20,26 @@ hardware=(root/'src/wds.resone.launcher/AiHardwarePlatformDetector.cs').read_tex
 qwen=(root/'src/wds.resone.api/VocalSinging/QwenTtsServiceManager.cs').read_text()
 whisper=(root/'src/wds.resone.api/WhisperCppRuntime.cs').read_text()
 llama=(root/'src/wds.resone.api/LlamaEngineResolver.cs').read_text()
+integrity=(root/'src/wds.resone.api/AiRuntimeIntegrity.cs').read_text()
+background=(root/'src/wds.resone.launcher/BackgroundController.cs').read_text()
+native=(root/'src/wds.resone.api/NativeChatClient.cs').read_text()
+worker=(root/'src/wds.resone.launcher/WorkerHost.cs').read_text()
 
 assert 'AiRuntimeLocation.Configure(args)' in program
 assert '--ai-root' in location and 'AI_ROOT' in apiroot
 assert 'root.txt' in apiroot
 assert '.wds-ai-engine.json' in installer and 'Version' in installer and 'Sha256' in installer
 assert 'WriteActivePointerAsync' in installer
+assert 'InstalledFileHashes' in installer and 'HashInstalledFilesAsync' in installer
 assert 'Updating model:' in supervisor and '.wds-ai.json' in supervisor
+assert 'ModelFileStampMatches' in supervisor and 'forceFullVerification' in supervisor
+assert 'llm-reverify.required' in integrity
+assert 'RequestLlmReverification' in native and 'RequestLlmReverification' in worker
+assert 'one automatic retry' in background and 'IsLlmReverificationRequested' in background
 assert 'AI_PLATFORM' in hardware and 'VEN_10DE' in hardware and 'VEN_1002' in hardware and 'VEN_8086' in hardware
+assert 'NVIDIA display adapter / CUDA backend' in hardware
+assert 'AMD display adapter / Vulkan backend' in hardware
+assert 'ExpandManifestPacks' in installer and 'CompactEngineBackend' in installer
 assert 'ResolveEngineDirectory("tts"' in qwen
 assert 'ResolveEngineDirectory("asr"' in whisper
 assert 'ResolveEngineDirectory("llm"' in llama

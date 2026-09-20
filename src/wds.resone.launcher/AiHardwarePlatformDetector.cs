@@ -18,17 +18,17 @@ internal static class AiHardwarePlatformDetector
         if (OperatingSystem.IsWindows())
         {
             var vendors = WindowsDisplayVendors();
-            if (vendors.Contains("nvidia")) return new("nvidia", "NVIDIA display adapter");
-            if (vendors.Contains("amd")) return new("amd", "AMD display adapter");
-            if (vendors.Contains("intel")) return new("intel", "Intel display adapter");
+            if (vendors.Contains("nvidia")) return new("cuda", "NVIDIA display adapter / CUDA backend");
+            if (vendors.Contains("amd")) return new("vulkan", "AMD display adapter / Vulkan backend");
+            if (vendors.Contains("intel")) return new("vulkan", "Intel display adapter / Vulkan backend");
         }
         else if (OperatingSystem.IsLinux())
         {
             var vendors = LinuxDrmVendors();
-            if (vendors.Contains("nvidia")) return new("nvidia", "NVIDIA DRM adapter");
-            if (vendors.Contains("amd")) return new("amd", "AMD DRM adapter");
-            if (vendors.Contains("intel")) return new("intel", "Intel DRM adapter");
-            if (TryLoad("libcuda.so.1")) return new("nvidia", "NVIDIA CUDA driver");
+            if (vendors.Contains("nvidia")) return new("cuda", "NVIDIA DRM adapter / CUDA backend");
+            if (vendors.Contains("amd")) return new("vulkan", "AMD DRM adapter / Vulkan backend");
+            if (vendors.Contains("intel")) return new("vulkan", "Intel DRM adapter / Vulkan backend");
+            if (TryLoad("libcuda.so.1")) return new("cuda", "NVIDIA CUDA driver");
         }
 
         return new("cpu", "CPU fallback");
@@ -39,10 +39,9 @@ internal static class AiHardwarePlatformDetector
         value = value.Trim().ToLowerInvariant();
         return value switch
         {
-            "cuda" => "nvidia",
-            "rocm" or "hip" => "amd",
+            "nvidia" or "cuda" => "cuda",
+            "amd" or "intel" or "vulkan" or "rocm" or "hip" or "igpu" => "vulkan",
             "metal" => "apple",
-            "igpu" => "intel",
             _ => value
         };
     }

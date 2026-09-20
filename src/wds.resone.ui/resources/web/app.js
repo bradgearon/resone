@@ -342,8 +342,32 @@ function scheduleWorkspaceSave() {
     clearTimeout(workspaceSaveTimer);
     workspaceSaveTimer = setTimeout(() => saveWorkspace(false), 350);
 }
+function renderSongNotes() {
+    const producer = String(workspaceProducerDesign || '').trim();
+    const composer = String(workspaceComposerOverview || '').trim();
+    if ($('producerNotesText')) $('producerNotesText').textContent = producer || 'No producer notes yet. Song mode creates these when the Producer plans the piece.';
+    if ($('composerNotesText')) $('composerNotesText').textContent = composer || 'No composer notes yet. The Composer design pass creates these when it is enabled for Song mode.';
+    if ($('songNotesMeta')) {
+        if (producer && composer) $('songNotesMeta').textContent = 'Producer + composer context';
+        else if (producer) $('songNotesMeta').textContent = 'Producer context only';
+        else if (composer) $('songNotesMeta').textContent = 'Composer context only';
+        else $('songNotesMeta').textContent = 'No generated notes for this piece';
+    }
+}
+function setSongNotesOpen(open) {
+    const panel=$('songNotesPanel'), toggle=$('songNotesToggle');
+    if (!panel || !toggle) return;
+    const visible=!!open;
+    panel.hidden=!visible;
+    toggle.classList.toggle('active',visible);
+    toggle.setAttribute('aria-expanded',String(visible));
+    toggle.title=visible?'Hide producer and composer notes':'Show producer and composer notes';
+    toggle.setAttribute('aria-label',toggle.title);
+    if (visible) renderSongNotes();
+}
 function updateSongIdentity() {
     if ($('songTitle') && document.activeElement !== $('songTitle')) $('songTitle').textContent = workspaceTitle;
+    renderSongNotes();
 }
 function setWorkspaceSongs(values) {
     workspaceSongs = Array.isArray(values) ? values : [];
@@ -367,6 +391,11 @@ function renderSongList() {
 function loadWorkspaceSong(id) {
     if (pending || !id || id===workspaceId) return;
     saveWorkspace(false);
+    // A workspace switch is also a playback-source switch. Stop the currently
+    // buffered song immediately so its instruments/rendered vocal cannot keep
+    // sounding while the next workspace is loading.
+    send('stop');
+    transport='stopped'; anchor=0; editorBeat=0;
     workspaceLoadRequest=crypto.randomUUID();
     send('workspaceLoad',{id},workspaceLoadRequest); status('Loading saved song…');
 }
@@ -558,7 +587,7 @@ function startSongGeneration(text) {
         songRun = {
             brief : text.trim(), previous, includedIds, state : null, design : '',
             sectionIndex : 0, laneIndex : 0, selectedLaneId : selected,
-            completedChunks : 0, failures : []
+            completedChunks : 0, recoveryWarnings : []
         };
         pending = {id, kind : 'songDesign', brief : text.trim(), previous, includedIds};
         send('stop'); transport = 'stopped'; anchor = 0;
@@ -595,64 +624,94 @@ function nextSongChunk() {
     if (!songRun?.state?.sections?.length) return finishSongGeneration();
     if (songRun.sectionIndex >= songRun.state.sections.length) return finishSongGeneration();
     const section = songRun.state.sections[songRun.sectionIndex];
-    while (songRun.laneIndex < songRun.includedIds.length && !song.lanes.some(l => l.id === songRun.includedIds[songRun.laneIndex]))
-        songRun.laneIndex++;
     if (songRun.laneIndex >= songRun.includedIds.length) {
         songRun.sectionIndex++; songRun.laneIndex = 0; return nextSongChunk();
     }
     const laneId = songRun.includedIds[songRun.laneIndex], target = song.lanes.find(l => l.id === laneId);
-    if (!target) { songRun.laneIndex++; return nextSongChunk(); }
+    if (!target) return stopSongGeneration(`Planned song lane ${laneId} disappeared before it could be generated.`);
     const id = crypto.randomUUID(), project = sectionProject(section), bounds = sectionBounds(section);
     pending = {id, kind : 'songChunk', laneId, sectionId : section.id, sectionIndex : songRun.sectionIndex,
         laneIndex : songRun.laneIndex, startBeat : bounds.start, endBeat : bounds.end, sectionLength : bounds.length};
     status(`Song · Section ${songRun.sectionIndex + 1}/${songRun.state.sections.length} · ${target.name} · Queued…`);
     busy();
+    const description = section.plan || `${section.title} section`;
     send('songChunk', {project, songState : songRun.state, sectionId : section.id, laneId,
-        description : section.plan || `${section.title} section`, useAhd : $('ahd').checked}, id);
+        description, useAhd : $('ahd').checked}, id);
 }
-function skipFailedSongChunk(message) {
+function recoverSongChunkFailure(message) {
     if (!songRun || pending?.kind !== 'songChunk') return false;
-    const section = songRun.state?.sections?.[pending.sectionIndex], target = song.lanes.find(l => l.id === pending.laneId);
-    const label = `${section?.title || pending.sectionId || 'Section'} · ${target?.name || pending.laneId}`;
-    songRun.failures.push({sectionId : pending.sectionId, laneId : pending.laneId, message : String(message || 'Generation failed.')});
-    songRun.laneIndex = pending.laneIndex + 1;
+    const failed = pending;
+    const section = songRun.state?.sections?.[failed.sectionIndex], target = song.lanes.find(l => l.id === failed.laneId);
+    const label = `${section?.title || failed.sectionId || 'Section'} · ${target?.name || failed.laneId}`;
+    const detail = String(message || 'No playable MIDI could be recovered from the generated section.');
+    songRun.recoveryWarnings.push(`${label}: ${detail} Existing music/silence was preserved and generation continued.`);
+    songRun.emptyChunks = (songRun.emptyChunks || 0) + 1;
+    songRun.completedChunks = (songRun.completedChunks || 0) + 1;
+    songRun.laneIndex = failed.laneIndex + 1;
     pending = null;
-    status(`Song · Skipped ${label}: ${message || 'generation failed'} · continuing…`);
-    busy();
+    commit();
+    status(`Song · ${label} · kept existing music/silence and continuing…`);
     nextSongChunk();
     return true;
+}
+function stopSongGeneration(message) {
+    if (!songRun) return;
+    const run = songRun, completed = Number(run.completedChunks || 0);
+    if (completed > 0) {
+        undo.push(run.previous); if (undo.length > 40) undo.shift(); redo = [];
+    } else {
+        song = clone(run.previous);
+    }
+    selected = run.selectedLaneId && song.lanes.some(l => l.id === run.selectedLaneId) ? run.selectedLaneId : song.lanes[0].id;
+    songRun = null; pending = null;
+    commit(); renderHistory(); busy(); render();
+    status(`Song generation stopped. ${message}`);
 }
 
 function applySongChunk(payload) {
     if (!songRun || pending?.kind !== 'songChunk') throw Error('Song generation state was lost.');
-    const tracks = payload.tracks;
-    if (!Array.isArray(tracks) || tracks.length !== 1 || tracks[0].laneId !== pending.laneId || !Array.isArray(tracks[0].notes) || !tracks[0].notes.length)
-        throw Error('Invalid song-section arrangement data.');
-    const t = tracks[0], target = song.lanes.find(l => l.id === pending.laneId);
+    const tracks = Array.isArray(payload.tracks) ? payload.tracks : [];
+    const t = tracks.find(x => x?.laneId === pending.laneId) || (tracks.length === 1 ? tracks[0] : null);
+    const target = song.lanes.find(l => l.id === pending.laneId);
     if (!target) throw Error('Song lane disappeared during generation.');
     const start = pending.startBeat, end = pending.endBeat, length = pending.sectionLength;
+    const rawNotes = Array.isArray(t?.notes) ? t.notes : [];
     const kept = (target.notes || []).filter(n => n.start < start || n.start >= end);
-    const shifted = t.notes.filter(n => Number.isFinite(n.start) && Number.isFinite(n.duration) && n.duration > 0 && n.start < length + 1e-6)
+    const shifted = rawNotes.filter(n => Number.isFinite(n.start) && Number.isFinite(n.duration) && n.duration > 0 &&
+            Number.isInteger(n.pitch) && n.pitch >= 0 && n.pitch <= 127 && n.start < length + 1e-6)
         .map(n => ({...n, start : start + Math.max(0, n.start), duration : Math.min(n.duration, Math.max(.001, end - (start + Math.max(0, n.start))))}));
-    target.notes = [...kept, ...shifted].sort((a,b) => a.start-b.start || a.pitch-b.pitch);
-    if (typeof rememberNotationKey === 'function') rememberNotationKey(target,t.notation,start,end);
+
+    if (shifted.length) {
+        // Replace this section only when the composer actually supplied usable MIDI.
+        // Invalid events were already removed by the parser; keep every surviving note.
+        target.notes = [...kept, ...shifted].sort((a,b) => a.start-b.start || a.pitch-b.pitch);
+        if (typeof rememberNotationKey === 'function' && t?.notation) rememberNotationKey(target,t.notation,start,end);
+        target.notation = ''; delete target.notationSignature;
+        if (target.vocals) { target.renderedVocalPath = ''; target.renderedVocalSignature = ''; }
+        LaneNotation.sync(target, song.tempo, song.meter); LaneNotation.accept(target);
+    } else {
+        // Do not erase an existing section just because one composer response had no
+        // playable events. For a new song this naturally leaves the section silent.
+        const sectionTitle = songRun.state.sections[pending.sectionIndex]?.title || pending.sectionId || 'Section';
+        songRun.emptyChunks = (songRun.emptyChunks || 0) + 1;
+        songRun.recoveryWarnings.push(`${sectionTitle} · ${target.name}: no playable MIDI was returned; existing music/silence was preserved.`);
+    }
+
     target.originalBrief = target.originalBrief || songRun.brief;
     target.prompts = [...(target.prompts || []), `[${songRun.state.sections[pending.sectionIndex].title}] ${songRun.brief}`];
     target.clipLengthBeats = Math.max(Number(target.clipLengthBeats)||0, ...songRun.state.sections.map(s => sectionBounds(s).end));
-    target.notation = ''; delete target.notationSignature;
-    if (target.vocals) { target.renderedVocalPath = ''; target.renderedVocalSignature = ''; }
-    LaneNotation.sync(target, song.tempo, song.meter); LaneNotation.accept(target);
     songRun.state = payload.songState || songRun.state;
     song.started = true;
     songRun.completedChunks = (songRun.completedChunks || 0) + 1;
     songRun.laneIndex = pending.laneIndex + 1;
+    if (Array.isArray(payload.warnings) && payload.warnings.length) songRun.recoveryWarnings.push(...payload.warnings.map(String));
     pending = null;
     commit();
     nextSongChunk();
 }
 function finishSongGeneration() {
     if (!songRun) return;
-    const run = songRun, completed = Number(run.completedChunks || 0), failures = run.failures || [];
+    const run = songRun, completed = Number(run.completedChunks || 0);
     if (completed > 0) {
         undo.push(run.previous); if (undo.length > 40) undo.shift(); redo = [];
     }
@@ -661,10 +720,11 @@ function finishSongGeneration() {
         history.push({brief : run.brief, song : clone(song), laneId : selected, createdUtc:new Date().toISOString()}); if (history.length > 40) history.shift(); if (typeof workspaceHistoryVersion !== 'undefined') workspaceHistoryVersion++;
     }
     songRun = null; pending = null; commit(); renderHistory(); busy();
-    if (failures.length)
-        status(`Song complete with ${failures.length} skipped generation${failures.length === 1 ? '' : 's'}. ${completed} chunk${completed === 1 ? '' : 's'} completed.`);
-    else
-        status('Song complete. Generated every checked lane through every producer section.');
+    const recovered = Array.isArray(run.recoveryWarnings) ? run.recoveryWarnings.length : 0;
+    const empty = Number(run.emptyChunks || 0);
+    status('Song complete. Processed every checked lane through every producer section.' +
+        (recovered ? ` Recovered ${recovered} notation issue${recovered === 1 ? '' : 's'} without regenerating.` : '') +
+        (empty ? ` ${empty} section/lane result${empty === 1 ? '' : 's'} had no usable MIDI, so existing music/silence was preserved and the song continued.` : ''));
     if (duration()) { anchor=0; editorBeat=0; send('play',song); }
 }
 function submit() {
@@ -1341,6 +1401,10 @@ function receive(j) {
         break;
     case 'connected':
     case 'ready':
+        if (j.op === 'ready' && typeof p.licensingEnabled === 'boolean') {
+            const licenseSettings = $('licenseSettings');
+            if (licenseSettings) licenseSettings.hidden = !p.licensingEnabled;
+        }
         if (p.logging) {
             $('runtimeDiagnostics').textContent = p.logging;
             status(p.logging);
@@ -1382,9 +1446,13 @@ function receive(j) {
         workspaceProducerDesign=p.producerDesign || ''; workspaceComposerOverview=p.composerDesign || '';
         workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceComposerVersion=workspaceComposerSavedVersion=0; workspaceSaveRequests.clear();
         workspaceBootstrapped=true; undo=[]; redo=[]; songRun=null; pending=null;
-        selected=song.lanes[0]?.id || selected; selectedNote=null; editorBeat=0; anchor=0;
+        selected=song.lanes[0]?.id || selected; selectedNote=null; editorBeat=0; anchor=0; transport='stopped';
         $('brief').value=history.at(-1)?.brief || '';
         setWorkspaceSongs(p.songs);
+        // Loading a song must atomically replace the playback project. `project`
+        // only updates the native snapshot; it does not cancel an already-rendered
+        // AudioEngine request, so stop first and then install the new song.
+        send('stop');
         send('project',song); render(); renderHistory(); renderSongList(); busy();
         send('voiceLibraryList',{},crypto.randomUUID());
         status('Loaded ' + workspaceTitle + '.');
@@ -1459,7 +1527,7 @@ function receive(j) {
     case 'songChunk':
         if (matching && pending?.kind === 'songChunk') {
             try { applySongChunk(p); }
-            catch (e) { skipFailedSongChunk(e.message); }
+            catch (e) { recoverSongChunkFailure(e.message); }
         }
         break;
     case 'composition':
@@ -1569,9 +1637,7 @@ function receive(j) {
         break;
     case 'cancelled':
         if (matching) {
-            if (pending?.kind === 'songChunk' && skipFailedSongChunk(p.message || 'Song chunk cancelled or timed out.'))
-                break;
-            restorePendingWork();
+                        restorePendingWork();
             pending = null;
             if (typeof songRun !== 'undefined') songRun = null;
             busy();
@@ -1597,7 +1663,7 @@ function receive(j) {
         }
         if (matching) {
             const failedKind = pending?.kind || '';
-            if (pending?.kind === 'songChunk' && skipFailedSongChunk(message)) break;
+            if (pending?.kind === 'songChunk' && recoverSongChunkFailure(message)) break;
             restorePendingWork();
             pending = null;
             if (typeof songRun !== 'undefined') songRun = null;
@@ -1658,7 +1724,8 @@ $('renderVocals').onclick = () => {
         const id=crypto.randomUUID();
         pending={id,kind:'renderVocals',laneId:target.id};
         status('Vocals · Starting local voice render…'); busy();
-        send('voiceServiceActivity',{service:'custom-voice'},crypto.randomUUID());
+        // RenderVocals owns the custom-voice service lifetime itself. Do not race a
+        // separate background warm-up request against the foreground render.
         send('renderVocals',{project:clone(song),laneId:target.id,text:target.lyrics,voiceId:target.voiceId},id);
     } catch(e) { status(e.message); }
 };
@@ -1750,6 +1817,7 @@ $('voiceOk').onclick=()=>{
 $('voiceSingingPreview').onchange=()=>{ if (voicePreview) $('voicePreviewStatus').textContent=$('voiceSingingPreview').checked && !voicePreview.singingWav?'Run Generate/Import again to create the singing preview.':'Preview ready.'; };
 
 $('libraryToggle').onclick=toggleLibraryView;
+$('songNotesToggle').onclick=()=>setSongNotesOpen($('songNotesPanel')?.hidden !== false);
 $('songTitle').onclick=()=>{ if(pending)return; $('songTitle').contentEditable='true'; $('songTitle').focus(); const r=document.createRange();r.selectNodeContents($('songTitle'));const sel=getSelection();sel.removeAllRanges();sel.addRange(r); };
 $('songTitle').onkeydown=e=>{ if(e.key==='Enter'){e.preventDefault();$('songTitle').blur();} if(e.key==='Escape'){e.preventDefault();$('songTitle').textContent=workspaceTitle;$('songTitle').blur();} };
 $('songTitle').onblur=()=>{ if($('songTitle').contentEditable==='true'){ workspaceTitle=normalizedWorkspaceTitle($('songTitle').textContent); $('songTitle').contentEditable='false'; updateSongIdentity(); renderSongList(); saveWorkspace(true); } };

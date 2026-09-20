@@ -15,7 +15,7 @@ public sealed class RuntimeConfig
     public bool ProvisionAiRuntime { get; set; } = true;
     public bool RequireHashes { get; set; } = true;
     public Dictionary<string, DependencyPin> DependencyPins { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public List<EnginePack> EnginePacks { get; set; } = [];
+    public List<EnginePackManifestEntry> EnginePacks { get; set; } = [];
     public List<ModelFile> Models { get; set; } = [];
     public List<ServiceSpec> Services { get; set; } = [];
     public UpdatePolicy Updates { get; set; } = new();
@@ -56,11 +56,18 @@ internal sealed class ModelReceipt
     public string Version { get; set; } = "";
     public string Url { get; set; } = "";
     public string Sha256 { get; set; } = "";
+    public long FileLength { get; set; }
+    public long LastWriteUtcTicks { get; set; }
     public DateTimeOffset InstalledUtc { get; set; }
+    public DateTimeOffset VerifiedUtc { get; set; }
 }
 
 [JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(RuntimeConfig))]
+[JsonSerializable(typeof(EnginePackManifestEntry))]
+[JsonSerializable(typeof(CompactEngineBackend))]
+[JsonSerializable(typeof(CompactEnginePackAsset))]
+[JsonSerializable(typeof(EnginePackArchive))]
 [JsonSerializable(typeof(ModelReceipt))]
 [JsonSerializable(typeof(EnginePackReceipt))]
 internal partial class RuntimeJson : JsonSerializerContext;
@@ -73,6 +80,9 @@ internal partial class RuntimeJson : JsonSerializerContext;
 public sealed class ServiceSupervisor(string appRoot, string aiRoot, HttpClient http, Action<string>? onStatus = null) : IDisposable
 {
     private readonly List<Process> _owned = [];
+    private readonly SemaphoreSlim _provisionGate = new(1, 1);
+    private RuntimeConfig? _config;
+    private AiHardwareProfile? _hardware;
     private void Report(string message) { Console.WriteLine(message); onStatus?.Invoke(message); }
     public string SelectedBackend { get; private set; } = "cpu";
 
@@ -80,24 +90,24 @@ public sealed class ServiceSupervisor(string appRoot, string aiRoot, HttpClient 
     {
         string path = Path.Combine(appRoot, "config", "runtime.json");
         if (!File.Exists(path)) return;
-        var config = JsonSerializer.Deserialize(await File.ReadAllTextAsync(path, token), RuntimeJson.Default.RuntimeConfig) ?? new RuntimeConfig();
-        ConfigureLogging(config.Logging, appRoot);
+        _config = await LoadRuntimeConfigAsync(token).ConfigureAwait(false);
+        ConfigureLogging(_config.Logging, appRoot);
 
-        var hardware = AiHardwarePlatformDetector.Detect();
-        SelectedBackend = hardware.Platform;
-        Report($"AI runtime: {hardware.Description}; root={aiRoot}");
+        _hardware = AiHardwarePlatformDetector.Detect();
+        SelectedBackend = _hardware.Platform;
+        Report($"AI runtime: {_hardware.Description}; root={aiRoot}");
 
-        if (!config.UseExistingStack && config.ProvisionAiRuntime)
+        if (!_config.UseExistingStack && _config.ProvisionAiRuntime)
         {
-            IReadOnlyList<EnginePack> packs = EnginePackInstaller.SelectPacks(config, hardware);
-            foreach (EnginePack pack in packs)
-                await EnginePackInstaller.InstallAsync(aiRoot, pack, http, Report, token).ConfigureAwait(false);
+            bool forceLlmVerification = AiRuntimeIntegrity.IsLlmReverificationRequested(aiRoot);
+            if (forceLlmVerification)
+                Report("Previous local inference failure requested a full LLM engine/model integrity check.");
 
-            foreach (ModelFile model in config.Models.Where(m => m.Enabled))
-            {
-                ValidateModelMetadata(model, config.RequireHashes);
-                await DownloadModelAsync(model, token).ConfigureAwait(false);
-            }
+            await EnsureComponentCoreAsync("llm", token, forceLlmVerification).ConfigureAwait(false);
+
+            // Clear only after both the selected LLM engine and enabled LLM model(s)
+            // have completed provisioning/verification successfully. ASR and TTS are lazy.
+            if (forceLlmVerification) AiRuntimeIntegrity.ClearLlmReverification(aiRoot);
         }
         else
         {
@@ -110,7 +120,7 @@ public sealed class ServiceSupervisor(string appRoot, string aiRoot, HttpClient 
 #if RESONE_CUSTOMER_RELEASE
         native = true;
 #endif
-        foreach (ServiceSpec spec in config.Services.Where(s => s.Enabled && !(native && s.Name.Equals("LLM", StringComparison.OrdinalIgnoreCase))))
+        foreach (ServiceSpec spec in _config.Services.Where(s => s.Enabled && !(native && s.Name.Equals("LLM", StringComparison.OrdinalIgnoreCase))))
         {
             token.ThrowIfCancellationRequested();
             string executable = ResolveServicePath(spec.Executable);
@@ -137,6 +147,92 @@ public sealed class ServiceSupervisor(string appRoot, string aiRoot, HttpClient 
             process.BeginErrorReadLine();
         }
     }
+
+    public async Task EnsureComponentAsync(string component, CancellationToken token)
+    {
+        component = NormalizeComponent(component);
+
+        // Refresh the manifest for every explicit ensure. This matters after an installer/update
+        // replaces config/runtime.json while the singleton launcher is still alive; a stale
+        // in-memory manifest must never prevent a missing model/engine from being restored.
+        _config = await LoadRuntimeConfigAsync(token).ConfigureAwait(false);
+        ConfigureLogging(_config.Logging, appRoot);
+        _hardware ??= AiHardwarePlatformDetector.Detect();
+        SelectedBackend = _hardware.Platform;
+
+        if (_config.UseExistingStack || !_config.ProvisionAiRuntime)
+        {
+            Report($"{component.ToUpperInvariant()} runtime provisioning is disabled; using files already present under AI_ROOT.");
+            return;
+        }
+
+        await EnsureComponentCoreAsync(component, token, forceFullVerification: false).ConfigureAwait(false);
+    }
+
+    private async Task EnsureComponentCoreAsync(string component, CancellationToken token, bool forceFullVerification)
+    {
+        RuntimeConfig config = _config ?? throw new InvalidOperationException("Runtime manifest has not been loaded.");
+        AiHardwareProfile hardware = _hardware ?? throw new InvalidOperationException("AI hardware profile has not been detected.");
+        await _provisionGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            // Models and engines are independent assets. Restore enabled models first so deleting
+            // Gemma always causes an automatic startup download, and deleting Whisper/Qwen models
+            // causes the same repair on the first lazy ASR/TTS use. Do not let an engine selection
+            // problem mask a missing model.
+            foreach (ModelFile model in config.Models.Where(m => m.Enabled && IsModelForComponent(m, component)))
+            {
+                ValidateModelMetadata(model, config.RequireHashes);
+                await DownloadModelAsync(model, token, forceFullVerification && component.Equals("llm", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false);
+            }
+
+            IReadOnlyList<EnginePack> packs = EnginePackInstaller.SelectPacks(config, hardware, component);
+            if (packs.Count == 0)
+            {
+                // A previously verified active engine may still be perfectly usable if an older or
+                // temporarily stale manifest lacks the download record. This is especially useful
+                // while upgrading an already-installed runtime: restore the model and continue with
+                // the verified engine rather than making the whole AI stack unavailable.
+                if (EnginePackInstaller.HasUsableActiveEngine(aiRoot, component, hardware.Platform))
+                {
+                    Report($"No downloadable {component.ToUpperInvariant()} pack matched backend {hardware.Platform}; using the existing verified active engine.");
+                    return;
+                }
+                throw new InvalidOperationException($"No enabled {component.ToUpperInvariant()} engine pack is available for backend {hardware.Platform}.");
+            }
+
+            foreach (EnginePack pack in packs)
+                await EnginePackInstaller.InstallAsync(
+                    aiRoot, pack, http, Report, token,
+                    forceFullVerification: forceFullVerification && component.Equals("llm", StringComparison.OrdinalIgnoreCase))
+                    .ConfigureAwait(false);
+        }
+        finally
+        {
+            _provisionGate.Release();
+        }
+    }
+
+
+    private async Task<RuntimeConfig> LoadRuntimeConfigAsync(CancellationToken token)
+    {
+        string path = Path.Combine(appRoot, "config", "runtime.json");
+        if (!File.Exists(path)) throw new FileNotFoundException("AI runtime manifest was not found.", path);
+        return JsonSerializer.Deserialize(await File.ReadAllTextAsync(path, token).ConfigureAwait(false), RuntimeJson.Default.RuntimeConfig)
+            ?? new RuntimeConfig();
+    }
+
+    private static string NormalizeComponent(string component)
+        => component.Trim().ToLowerInvariant() switch
+        {
+            "llm" => "llm",
+            "tts" => "tts",
+            "asr" or "stt" or "whisper" => "asr",
+            _ => throw new ArgumentException("Unknown AI runtime component: " + component, nameof(component))
+        };
+
+    private static bool IsModelForComponent(ModelFile model, string component)
+        => model.Path.Replace('\\', '/').StartsWith($"models/{component}/", StringComparison.OrdinalIgnoreCase);
 
 
     internal static void ConfigureLogging(LoggingPolicy logging, string appRoot)
@@ -188,7 +284,10 @@ public sealed class ServiceSupervisor(string appRoot, string aiRoot, HttpClient 
             throw new InvalidDataException($"Model {model.Id} requires a 64-character SHA256 hash.");
     }
 
-    private async Task DownloadModelAsync(ModelFile model, CancellationToken token)
+    private static bool IsLlmModel(ModelFile model)
+        => model.Path.Replace('\\', '/').StartsWith("models/llm/", StringComparison.OrdinalIgnoreCase);
+
+    private async Task DownloadModelAsync(ModelFile model, CancellationToken token, bool forceFullVerification = false)
     {
         string destination = EnginePackInstaller.Under(aiRoot, model.Path);
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
@@ -196,13 +295,20 @@ public sealed class ServiceSupervisor(string appRoot, string aiRoot, HttpClient 
 
         if (File.Exists(destination) && new FileInfo(destination).Length > 0)
         {
-            bool hasReceipt = File.Exists(receiptPath);
-            bool metadataMatches = hasReceipt && await ReceiptMatchesAsync(receiptPath, model, token).ConfigureAwait(false);
+            ModelReceipt? receipt = await ReadModelReceiptAsync(receiptPath, token).ConfigureAwait(false);
+            bool metadataMatches = receipt is not null && ReceiptMatches(receipt, model);
             if (metadataMatches)
             {
+                // Fast path: the download was SHA-verified once already and the file's cheap stamp
+                // still matches that verified state. A worker/native failure sets a marker that
+                // intentionally bypasses this cache and performs the full SHA pass next startup.
+                if (!forceFullVerification && ModelFileStampMatches(destination, receipt!)) return;
+
                 try
                 {
+                    if (forceFullVerification) Report("Rechecking LLM model integrity: " + model.Id);
                     await VerifyModelAsync(destination, model, token).ConfigureAwait(false);
+                    await WriteModelReceiptAsync(receiptPath, destination, model, token, receipt!.InstalledUtc).ConfigureAwait(false);
                     return;
                 }
                 catch (InvalidDataException)
@@ -210,13 +316,13 @@ public sealed class ServiceSupervisor(string appRoot, string aiRoot, HttpClient 
                     Report("Replacing a model that failed verification: " + model.Id);
                 }
             }
-            else if (!hasReceipt)
+            else if (receipt is null)
             {
-                // One-time migration: adopt a manually-copied model only when no managed receipt exists.
+                // One-time migration: adopt a manually-copied model only after a full hash check.
                 try
                 {
                     await VerifyModelAsync(destination, model, token).ConfigureAwait(false);
-                    await WriteModelReceiptAsync(receiptPath, model, token).ConfigureAwait(false);
+                    await WriteModelReceiptAsync(receiptPath, destination, model, token).ConfigureAwait(false);
                     return;
                 }
                 catch (InvalidDataException)
@@ -271,34 +377,46 @@ public sealed class ServiceSupervisor(string appRoot, string aiRoot, HttpClient 
 
         File.Move(partial, destination, true);
         TryDelete(partialMeta);
-        await WriteModelReceiptAsync(receiptPath, model, token).ConfigureAwait(false);
+        await WriteModelReceiptAsync(receiptPath, destination, model, token).ConfigureAwait(false);
         Report($"Model ready: {model.Id} ({model.Version})");
     }
 
-    private static async Task<bool> ReceiptMatchesAsync(string receiptPath, ModelFile model, CancellationToken token)
+    private static async Task<ModelReceipt?> ReadModelReceiptAsync(string receiptPath, CancellationToken token)
     {
-        if (!File.Exists(receiptPath)) return false;
+        if (!File.Exists(receiptPath)) return null;
         try
         {
-            var receipt = JsonSerializer.Deserialize(await File.ReadAllTextAsync(receiptPath, token).ConfigureAwait(false), RuntimeJson.Default.ModelReceipt);
-            return receipt is not null &&
-                receipt.Id.Equals(model.Id, StringComparison.OrdinalIgnoreCase) &&
-                receipt.Version.Equals(model.Version, StringComparison.Ordinal) &&
-                receipt.Url.Equals(model.Url, StringComparison.Ordinal) &&
-                receipt.Sha256.Equals(model.Sha256, StringComparison.OrdinalIgnoreCase);
+            return JsonSerializer.Deserialize(await File.ReadAllTextAsync(receiptPath, token).ConfigureAwait(false), RuntimeJson.Default.ModelReceipt);
         }
-        catch { return false; }
+        catch { return null; }
     }
 
-    private static Task WriteModelReceiptAsync(string receiptPath, ModelFile model, CancellationToken token)
+    private static bool ReceiptMatches(ModelReceipt receipt, ModelFile model)
+        => receipt.Id.Equals(model.Id, StringComparison.OrdinalIgnoreCase) &&
+           receipt.Version.Equals(model.Version, StringComparison.Ordinal) &&
+           receipt.Url.Equals(model.Url, StringComparison.Ordinal) &&
+           receipt.Sha256.Equals(model.Sha256, StringComparison.OrdinalIgnoreCase);
+
+    private static bool ModelFileStampMatches(string path, ModelReceipt receipt)
     {
+        if (receipt.FileLength <= 0 || receipt.LastWriteUtcTicks <= 0) return false;
+        var file = new FileInfo(path);
+        return file.Exists && file.Length == receipt.FileLength && file.LastWriteTimeUtc.Ticks == receipt.LastWriteUtcTicks;
+    }
+
+    private static Task WriteModelReceiptAsync(string receiptPath, string modelPath, ModelFile model, CancellationToken token, DateTimeOffset? installedUtc = null)
+    {
+        var file = new FileInfo(modelPath);
         var receipt = new ModelReceipt
         {
             Id = model.Id,
             Version = model.Version,
             Url = model.Url,
             Sha256 = model.Sha256.ToUpperInvariant(),
-            InstalledUtc = DateTimeOffset.UtcNow
+            FileLength = file.Length,
+            LastWriteUtcTicks = file.LastWriteTimeUtc.Ticks,
+            InstalledUtc = installedUtc ?? DateTimeOffset.UtcNow,
+            VerifiedUtc = DateTimeOffset.UtcNow
         };
         return File.WriteAllTextAsync(receiptPath, JsonSerializer.Serialize(receipt, RuntimeJson.Default.ModelReceipt), token);
     }

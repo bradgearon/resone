@@ -42,67 +42,77 @@ public sealed partial class ResonatorParser
             string token = rawToken.Trim();
             if (token.Length == 0 || token is "|" or "/" or "//")
                 continue;
-            if (TryModeCommand(token))
-                continue;
-            if (TryHeader(token, composition))
-                continue;
-            if (TryDynamic(token))
-                continue;
-            if (token.StartsWith("art=", StringComparison.OrdinalIgnoreCase))
+            try
             {
-                EmitArticulation(token[4..], cursor, composition);
-                continue;
-            }
-
-            if (token.StartsWith("payoff(", StringComparison.OrdinalIgnoreCase) && token.EndsWith(')'))
-            {
-                token = token[7..^1] + "^";
-            }
-
-            if (token.StartsWith('(') && token.EndsWith(')'))
-            {
-                string inner = token[1..^1];
-                var innerResult = ParseInline(inner, cursor, composition);
-                cursor = innerResult;
-                continue;
-            }
-
-            if (token.StartsWith('['))
-            {
-                cursor += ParseChordTolerant(token, cursor, composition);
-                continue;
-            }
-
-            if (token.StartsWith('_'))
-            {
-                var spec = ParseModifiers(token, baseLength: 1);
-                cursor += DurationTicks(spec.DurationKind, _profile.Ppq);
-                _lastSoundingGroup = [];
-                continue;
-            }
-
-            if (token.StartsWith('-'))
-            {
-                var spec = ParseModifiers(token, baseLength: 1);
-                long extension = DurationTicks(spec.DurationKind, _profile.Ppq);
-                if (_lastSoundingGroup.Count == 0)
-                    throw new ResonatorParseException("Hold '-' has no preceding note or chord to extend.");
-                foreach (var oldNote in _lastSoundingGroup.ToArray())
+                if (TryModeCommand(token))
+                    continue;
+                if (TryHeader(token, composition))
+                    continue;
+                if (TryDynamic(token))
+                    continue;
+                if (token.StartsWith("art=", StringComparison.OrdinalIgnoreCase))
                 {
-                    int index = composition.Events.IndexOf(oldNote);
-                    var extended = oldNote with
-                    {
-                        DurationTicks = oldNote.DurationTicks + extension
-                    };
-                    composition.Events[index] = extended;
-                    _lastSoundingGroup[_lastSoundingGroup.IndexOf(oldNote)] = extended;
+                    EmitArticulation(token[4..], cursor, composition);
+                    continue;
                 }
 
-                cursor += extension;
-                continue;
-            }
+                if (token.StartsWith("payoff(", StringComparison.OrdinalIgnoreCase) && token.EndsWith(')'))
+                    token = token[7..^1] + "^";
 
-            cursor += ParseSingleEventTolerant(token, cursor, composition);
+                if (token.StartsWith('(') && token.EndsWith(')'))
+                {
+                    string inner = token[1..^1];
+                    cursor = ParseInline(inner, cursor, composition);
+                    continue;
+                }
+
+                if (token.StartsWith('['))
+                {
+                    cursor += ParseChordTolerant(token, cursor, composition);
+                    continue;
+                }
+
+                if (token.StartsWith('_'))
+                {
+                    var spec = ParseModifiers(token, baseLength: 1);
+                    cursor += DurationTicks(spec.DurationKind, _profile.Ppq);
+                    _lastSoundingGroup = [];
+                    continue;
+                }
+
+                if (token.StartsWith('-'))
+                {
+                    var spec = ParseModifiers(token, baseLength: 1);
+                    long extension = DurationTicks(spec.DurationKind, _profile.Ppq);
+                    if (_lastSoundingGroup.Count == 0)
+                    {
+                        _warnings.Add($"Recovered orphan hold '{token}' as a rest; there was no preceding note/chord to extend.");
+                        cursor += extension;
+                        continue;
+                    }
+                    foreach (var oldNote in _lastSoundingGroup.ToArray())
+                    {
+                        int index = composition.Events.IndexOf(oldNote);
+                        var extended = oldNote with { DurationTicks = oldNote.DurationTicks + extension };
+                        composition.Events[index] = extended;
+                        _lastSoundingGroup[_lastSoundingGroup.IndexOf(oldNote)] = extended;
+                    }
+
+                    cursor += extension;
+                    continue;
+                }
+
+                cursor += ParseSingleEventTolerant(token, cursor, composition);
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or FormatException or OverflowException or ResonatorParseException)
+            {
+                _warnings.Add($"Recovered invalid token '{token}': {ex.Message}");
+                if (token.StartsWith('_') || token.StartsWith('-') || token.StartsWith('[') || token.StartsWith('('))
+                {
+                    cursor += BestEffortNominalTicks(token);
+                    _lastSoundingGroup = [];
+                }
+            }
         }
 
         composition.NominalLengthTicks = cursor;
@@ -112,24 +122,59 @@ public sealed partial class ResonatorParser
 
     private long ParseInline(string notation, long cursor, ResonatorComposition composition)
     {
-        foreach (string token in TokenizeAndExpand(notation))
+        foreach (string rawToken in TokenizeAndExpand(notation))
         {
+            string token = rawToken.Trim();
             if (token is "|" or "/" or "//" || token.Length == 0)
                 continue;
-            if (TryModeCommand(token))
-                continue;
-            if (token.StartsWith("art=", StringComparison.OrdinalIgnoreCase))
+            try
             {
-                EmitArticulation(token[4..], cursor, composition);
-                continue;
-            }
+                if (TryModeCommand(token))
+                    continue;
+                if (TryDynamic(token))
+                    continue;
+                if (token.StartsWith("art=", StringComparison.OrdinalIgnoreCase))
+                {
+                    EmitArticulation(token[4..], cursor, composition);
+                    continue;
+                }
 
-            if (token.StartsWith('['))
-                cursor += ParseChordTolerant(token, cursor, composition);
-            else if (token.StartsWith('_'))
-                cursor += DurationTicks(ParseModifiers(token, 1).DurationKind, _profile.Ppq);
-            else
-                cursor += ParseSingleEventTolerant(token, cursor, composition);
+                if (token.StartsWith('['))
+                    cursor += ParseChordTolerant(token, cursor, composition);
+                else if (token.StartsWith('_'))
+                {
+                    cursor += DurationTicks(ParseModifiers(token, 1).DurationKind, _profile.Ppq);
+                    _lastSoundingGroup = [];
+                }
+                else if (token.StartsWith('-'))
+                {
+                    long extension = DurationTicks(ParseModifiers(token, 1).DurationKind, _profile.Ppq);
+                    if (_lastSoundingGroup.Count == 0)
+                    {
+                        _warnings.Add($"Recovered orphan inline hold '{token}' as a rest.");
+                        cursor += extension;
+                    }
+                    else
+                    {
+                        foreach (var oldNote in _lastSoundingGroup.ToArray())
+                        {
+                            int index = composition.Events.IndexOf(oldNote);
+                            var extended = oldNote with { DurationTicks = oldNote.DurationTicks + extension };
+                            composition.Events[index] = extended;
+                            _lastSoundingGroup[_lastSoundingGroup.IndexOf(oldNote)] = extended;
+                        }
+                        cursor += extension;
+                    }
+                }
+                else
+                    cursor += ParseSingleEventTolerant(token, cursor, composition);
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or FormatException or OverflowException or ResonatorParseException)
+            {
+                _warnings.Add($"Recovered invalid inline token '{token}': {ex.Message}");
+                cursor += BestEffortNominalTicks(token);
+                _lastSoundingGroup = [];
+            }
         }
 
         return cursor;

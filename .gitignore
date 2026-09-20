@@ -1,16 +1,26 @@
+# Git metadata copied inside working/export folders
+.git/
+
+# Visual Studio / IDE state
+.vs/
+**/.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build outputs and language caches
+build/
 **/bin/
 **/obj/
-build/
-third_party/
-*.so*
-*.dll
-*.exe
-*.pdb
-*.dbg
-models/
-runtimes/
+**/__pycache__/
+*.pyc
 
-**/node_modules/
-**/.wrangler/
+# Local runtime/user state and downloaded AI assets
+user/
+models/
+engines/
+
+# Local secrets / generated installer output
 **/.secrets/
-**/.dev.vars
+installer/output/

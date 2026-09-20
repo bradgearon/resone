@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using Wds.Resone.Api;
 namespace Wds.Resone.Launcher;
 public sealed class LicenseService
 {
@@ -10,7 +11,7 @@ public sealed class LicenseService
  private static string Encode(byte[] b)=>Convert.ToBase64String(b).TrimEnd('=').Replace('+','-').Replace('/','_');
  public bool Enabled {
  get {
-#if RESONE_CUSTOMER_RELEASE
+#if RESONE_LICENSED_RELEASE
  return true;
 #else
  return config["enabled"]?.GetValue<bool>()??false;
@@ -34,7 +35,7 @@ public sealed class LicenseService
    var p=token.Split('.');if(p.Length!=3)return false;
    var header=JsonNode.Parse(Decode(p[0]))!;if(header["alg"]?.GetValue<string>()!="ES256")return false;
    string pub;
-#if RESONE_CUSTOMER_RELEASE
+#if RESONE_LICENSED_RELEASE
    using(var resource=typeof(LicenseService).Assembly.GetManifestResourceStream("Resone.LicensePublicKey")??throw new InvalidDataException("Release public key is missing."))using(var reader=new StreamReader(resource))pub=reader.ReadToEnd();
 #else
    pub=config["publicKey"]?.ToJsonString()??"{}";
@@ -46,25 +47,56 @@ public sealed class LicenseService
    return c["iss"]!.GetValue<string>()=="resone-licensing"&&c["aud"]!.GetValue<string>()=="wds.resone"&&c["device"]!.GetValue<string>()==fingerprint&&expires>now&&issued<=now+30&&expires-issued<=604830;
   }catch{return false;}
  }
+ private async Task<string> InstructionKeyAsync(string licenseKey,ECDsa device,CancellationToken token)
+ {
+  var result=await Exchange("instruction-key",licenseKey,device,token);
+  string key=result["instructionKey"]?.GetValue<string>()??throw new InvalidDataException("License service did not return an instruction key.");
+  string expectedDevice=Encode(SHA256.HashData(Encoding.UTF8.GetBytes(Public(device).ToJsonString())));
+  if(result["device"]?.GetValue<string>()!=expectedDevice)throw new InvalidDataException("Instruction key grant was not bound to this device.");
+  byte[] decoded=Convert.FromBase64String(key);try{if(decoded.Length!=32)throw new InvalidDataException("License service returned an invalid instruction key.");}finally{CryptographicOperations.ZeroMemory(decoded);}
+  InstructionContent.ConfigureReleaseKey(key);return key;
+ }
  public async Task EnsureAsync(CancellationToken token)
  {
   if(!Enabled)return;
   await gate.WaitAsync(token);try{
-   using var device=Device();var saved=Load();string? lease=saved["lease"]?.GetValue<string>();
-   // A valid offline lease avoids any network work on the audio path.
-   if(Valid(lease,device))return;
-   string key=saved["licenseKey"]?.GetValue<string>()??throw new InvalidOperationException("Activate Resone in Settings first.");
+   using var device=Device();var saved=Load();string? lease=saved["lease"]?.GetValue<string>();string? key=saved["licenseKey"]?.GetValue<string>();
+   if(Valid(lease,device)){
+#if RESONE_ENCRYPTED_INSTRUCTIONS
+    string? instruction=saved["instructionKey"]?.GetValue<string>();
+    if(!string.IsNullOrWhiteSpace(instruction)){InstructionContent.ConfigureReleaseKey(instruction);return;}
+    if(string.IsNullOrWhiteSpace(key))throw new InvalidOperationException("Activate Resone first.");
+    saved["instructionKey"]=await InstructionKeyAsync(key,device,token);Save(saved);
+#endif
+    return;
+   }
+   if(string.IsNullOrWhiteSpace(key))throw new InvalidOperationException("Activate Resone first.");
    var result=await Exchange("renew",key,device,token);saved["lease"]=result["lease"]?.DeepClone();
-   if(!Valid(saved["lease"]?.GetValue<string>(),device))throw new InvalidDataException("Invalid license signature or device binding.");Save(saved);
+   if(!Valid(saved["lease"]?.GetValue<string>(),device))throw new InvalidDataException("Invalid license signature or device binding.");
+#if RESONE_ENCRYPTED_INSTRUCTIONS
+   saved["instructionKey"]=await InstructionKeyAsync(key,device,token);
+#endif
+   Save(saved);
   }finally{gate.Release();}
  }
  public async Task<JsonObject> ActivateAsync(string key,CancellationToken token)
  {
-  await gate.WaitAsync(token);try{using var device=Device();var result=await Exchange("activate",key,device,token);string? lease=result["lease"]?.GetValue<string>();if(!Valid(lease,device))throw new InvalidDataException("Invalid license signature or device binding.");Save(new(){["licenseKey"]=key,["lease"]=lease});return new(){["message"]="Resone activated on this device.",["expiresAt"]=result["expiresAt"]?.DeepClone()};}finally{gate.Release();}
+#if RESONE_LOCAL_INSTALLER_TEST
+  string localTestKey=ReadEmbeddedText("Resone.LocalTestLicenseKey").Trim();
+  if(CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(key.Trim()),Encoding.UTF8.GetBytes(localTestKey)))
+  {
+   await gate.WaitAsync(token);try{Save(new(){["licenseKey"]=localTestKey,["localTest"]=true});return new(){["message"]="Resone local installer test activation succeeded."};}finally{gate.Release();}
+  }
+#endif
+  await gate.WaitAsync(token);try{using var device=Device();var result=await Exchange("activate",key,device,token);string? lease=result["lease"]?.GetValue<string>();if(!Valid(lease,device))throw new InvalidDataException("Invalid license signature or device binding.");var saved=new JsonObject{["licenseKey"]=key,["lease"]=lease};
+#if RESONE_ENCRYPTED_INSTRUCTIONS
+   saved["instructionKey"]=await InstructionKeyAsync(key,device,token);
+#endif
+   Save(saved);return new(){["message"]="Resone activated on this device.",["expiresAt"]=result["expiresAt"]?.DeepClone()};}finally{gate.Release();}
  }
  public async Task<JsonObject> ReleaseAsync(CancellationToken token)
  {
-  await gate.WaitAsync(token);try{using var device=Device();var saved=Load();var result=await Exchange("release",saved["licenseKey"]!.GetValue<string>(),device,token);File.Delete(file);return result;}finally{gate.Release();}
+  await gate.WaitAsync(token);try{using var device=Device();var saved=Load();var result=await Exchange("release",saved["licenseKey"]!.GetValue<string>(),device,token);File.Delete(file);InstructionContent.ClearReleaseKey();return result;}finally{gate.Release();}
  }
  private async Task<JsonObject> Exchange(string action,string key,ECDsa device,CancellationToken token)
  {
@@ -73,6 +105,15 @@ public sealed class LicenseService
   var challenge=await Post("/v1/challenge",new(){["action"]=action,["licenseKey"]=key,["devicePublicKey"]=Public(device)});string value=challenge["challenge"]!.GetValue<string>();
   return await Post("/v1/"+action,new(){["challenge"]=value,["licenseKey"]=key,["devicePublicKey"]=Public(device),["signature"]=Encode(device.SignData(Encoding.UTF8.GetBytes(value),HashAlgorithmName.SHA256,DSASignatureFormat.IeeeP1363FixedFieldConcatenation))});
  }
+
+#if RESONE_LOCAL_INSTALLER_TEST
+ private static string ReadEmbeddedText(string name)
+ {
+  using var stream=typeof(LicenseService).Assembly.GetManifestResourceStream(name)??throw new InvalidDataException("Local installer test resource is missing: "+name);
+  using var reader=new StreamReader(stream,Encoding.UTF8);
+  return reader.ReadToEnd();
+ }
+#endif
  [StructLayout(LayoutKind.Sequential)] private struct Blob{public int Size;public nint Data;}
  [DllImport("crypt32",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] private static extern bool CryptProtectData(ref Blob input,nint description,nint entropy,nint reserved,nint prompt,int flags,out Blob output);
  [DllImport("crypt32",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] private static extern bool CryptUnprotectData(ref Blob input,nint description,nint entropy,nint reserved,nint prompt,int flags,out Blob output);

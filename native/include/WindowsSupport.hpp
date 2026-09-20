@@ -114,9 +114,11 @@ inline std::filesystem::path apiLibrary(const std::filesystem::path &root) {
 inline std::filesystem::path fluidSynthLibrary(const std::filesystem::path &root) {
 #ifdef _WIN32
     const std::array candidates{
-        root / L"libfluidsynth-3.dll",
+        root / L"third_party" / L"libfluidsynth" / L"libfluidsynth-3.dll",
+        root / L"third_party" / L"libfluidsynth" / L"fluidsynth.dll",
         root / L"third_party" / L"vcpkg" / L"installed" / L"x64-windows" / L"bin" / L"libfluidsynth-3.dll",
-        root / L"third_party" / L"vcpkg" / L"installed" / L"x64-windows" / L"bin" / L"fluidsynth.dll"
+        root / L"third_party" / L"vcpkg" / L"installed" / L"x64-windows" / L"bin" / L"fluidsynth.dll",
+        root / L"libfluidsynth-3.dll"
     };
 #else
     const std::array candidates{root / L"libfluidsynth.so.3"};
@@ -125,7 +127,7 @@ inline std::filesystem::path fluidSynthLibrary(const std::filesystem::path &root
         if (std::filesystem::is_regular_file(candidate)) return candidate;
     // Preserve the installed-layout error path for a useful loader error.
 #ifdef _WIN32
-    return root / L"libfluidsynth-3.dll";
+    return root / L"third_party" / L"libfluidsynth" / L"libfluidsynth-3.dll";
 #else
     return root / L"libfluidsynth.so.3";
 #endif

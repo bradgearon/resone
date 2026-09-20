@@ -5,6 +5,22 @@ using System.Text;
 using Wds.Resone.Api;
 using Wds.Resone.Launcher;
 
+int activationFileIndex=Array.IndexOf(args,"--activate-license-file");
+if(activationFileIndex>=0)
+{
+ try
+ {
+  if(activationFileIndex+1>=args.Length)throw new ArgumentException("Missing activation file path.");
+  string activationRoot=ResoneRoot.Resolve();
+  string licenseKey=(await File.ReadAllTextAsync(args[activationFileIndex+1])).Trim();
+  if(string.IsNullOrWhiteSpace(licenseKey))throw new InvalidDataException("License key is empty.");
+  using var activationHttp=new HttpClient{Timeout=Timeout.InfiniteTimeSpan};
+  await new LicenseService(activationRoot,activationHttp).ActivateAsync(licenseKey,CancellationToken.None);
+  Environment.ExitCode=0;return;
+ }
+ catch(Exception e){Console.Error.WriteLine("Activation failed: "+e.Message);Environment.ExitCode=20;return;}
+}
+
 if(args.Contains("--worker")){await WorkerHost.RunAsync([]);return;}
 string root=ResoneRoot.Resolve();
 string aiRoot=AiRuntimeLocation.Configure(args);
@@ -48,6 +64,11 @@ using(var tray=new TrayIcon(()=>controller.OpenUi(),()=>controller.ToggleAsync()
    string? cmd=await reader.ReadLineAsync(request.Token);
    if(cmd=="open"){controller.OpenUi();await writer.WriteLineAsync("ok");}
    else if(cmd=="ensure"){string secret=await controller.EnsureAsync(request.Token);await writer.WriteLineAsync("ready "+secret);}
+   else if(cmd is not null && cmd.StartsWith("ensure-component ",StringComparison.OrdinalIgnoreCase)){
+    string component=cmd["ensure-component ".Length..].Trim();
+    await controller.EnsureRuntimeComponentAsync(component,request.Token);
+    await writer.WriteLineAsync("ready component "+component);
+   }
    else await writer.WriteLineAsync("Unknown launcher command.");
   }catch(Exception e){try{using var writer=new StreamWriter(pipe){AutoFlush=true};await writer.WriteLineAsync("Startup failed: "+e.Message);}catch{}}
  }

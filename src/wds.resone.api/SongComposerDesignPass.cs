@@ -15,6 +15,19 @@ public static class SongComposerDesignPass
     public const int DefaultMelodyCenterOctave = 3;
     public const int DefaultMelodyMaxOctave = 5;
 
+    public static Task<string> CreateAsync(
+        ILocalChatModelClient model,
+        string assetsRoot,
+        string brief,
+        string producerDesign,
+        int tempo,
+        string meter,
+        int targetBars,
+        bool useAhd,
+        string existingComposerOverview,
+        CancellationToken token)
+        => CreateAsync(model, assetsRoot, brief, producerDesign, tempo, meter, targetBars, useAhd, existingComposerOverview, "", token);
+
     public static async Task<string> CreateAsync(
         ILocalChatModelClient model,
         string assetsRoot,
@@ -25,6 +38,7 @@ public static class SongComposerDesignPass
         int targetBars,
         bool useAhd,
         string existingComposerOverview,
+        string genreContext,
         CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(brief)) throw new ArgumentException("A song brief is required.", nameof(brief));
@@ -89,11 +103,19 @@ NOTATION RULES
             .AppendLine($"AHD: {(useAhd ? "ENABLED — purposeful out-of-key/activated material is allowed" : "disabled")}")
             .AppendLine();
 
+        if (!string.IsNullOrWhiteSpace(genreContext))
+        {
+            user.AppendLine("RETRIEVED GENRE GUIDANCE")
+                .AppendLine("Use the selected genre brief to shape development, phrase behavior, harmony, rhythmic identity, density, transitions, and climax behavior. The user's request and established song identity remain authoritative.")
+                .AppendLine(genreContext)
+                .AppendLine();
+        }
+
         if (!string.IsNullOrWhiteSpace(existingComposerOverview))
         {
             user.AppendLine("EXISTING SONG COMPOSER OVERVIEW")
                 .AppendLine("This is the established musical DNA from the song being modified. Keep its successful tonal plan, emotional note palette, motifs, chord relationships, and response logic unless the new request explicitly changes them. Produce an updated composer design that remains recognizably the same piece.")
-                .AppendLine(existingComposerOverview.Length > 24000 ? existingComposerOverview[..24000] : existingComposerOverview)
+                .AppendLine(existingComposerOverview)
                 .AppendLine();
         }
 
@@ -121,6 +143,6 @@ NOTATION RULES
 
         // This packet is prompt context, not a generated track. Keep enough room for several exact
         // notation fragments while protecting every later section request from accidental prompt bloat.
-        return design.Length > 24000 ? design[..24000] : design;
+        return design;
     }
 }

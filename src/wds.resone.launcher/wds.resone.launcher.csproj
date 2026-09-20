@@ -16,12 +16,19 @@
     <Content Include="../../config/*.json" Link="config/%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
-  <ItemGroup Condition="'$(CustomerRelease)' != 'true'">
+  <ItemGroup Condition="'$(CustomerRelease)' != 'true' Or '$(ResoneEncryptInstructions)' != 'true'">
     <Content Include="../../assets/Instructions/**/*" Link="assets/Instructions/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <PropertyGroup Condition="'$(CustomerRelease)' == 'true'"><DefineConstants>$(DefineConstants);RESONE_CUSTOMER_RELEASE</DefineConstants></PropertyGroup>
-  <ItemGroup Condition="'$(CustomerRelease)' == 'true'"><EmbeddedResource Include="$(LicensePublicKeyFile)" LogicalName="Resone.LicensePublicKey" /></ItemGroup>
-  <Target Name="RequireLicensePublicKey" BeforeTargets="PrepareForBuild" Condition="'$(CustomerRelease)' == 'true'">
-    <Error Condition="!Exists('$(LicensePublicKeyFile)')" Text="CustomerRelease requires LicensePublicKeyFile (public P-256 JWK only)." />
+  <PropertyGroup Condition="'$(CustomerRelease)' == 'true' and '$(ResoneLicensingEnabled)' == 'true'"><DefineConstants>$(DefineConstants);RESONE_LICENSED_RELEASE</DefineConstants></PropertyGroup>
+  <PropertyGroup Condition="'$(CustomerRelease)' == 'true' and '$(ResoneEncryptInstructions)' == 'true'"><DefineConstants>$(DefineConstants);RESONE_ENCRYPTED_INSTRUCTIONS</DefineConstants></PropertyGroup>
+  <PropertyGroup Condition="'$(LocalInstallerTest)' == 'true'"><DefineConstants>$(DefineConstants);RESONE_LOCAL_INSTALLER_TEST</DefineConstants></PropertyGroup>
+  <ItemGroup Condition="'$(CustomerRelease)' == 'true' and '$(ResoneLicensingEnabled)' == 'true'"><EmbeddedResource Include="$(LicensePublicKeyFile)" LogicalName="Resone.LicensePublicKey" /></ItemGroup>
+  <ItemGroup Condition="'$(LocalInstallerTest)' == 'true'"><EmbeddedResource Include="$(LocalTestLicenseKeyFile)" LogicalName="Resone.LocalTestLicenseKey" /></ItemGroup>
+  <Target Name="RequireLocalInstallerTestKey" BeforeTargets="PrepareForBuild" Condition="'$(LocalInstallerTest)' == 'true'">
+    <Error Condition="!Exists('$(LocalTestLicenseKeyFile)')" Text="LocalInstallerTest requires LocalTestLicenseKeyFile." />
+  </Target>
+  <Target Name="RequireLicensePublicKey" BeforeTargets="PrepareForBuild" Condition="'$(CustomerRelease)' == 'true' and '$(ResoneLicensingEnabled)' == 'true'">
+    <Error Condition="!Exists('$(LicensePublicKeyFile)')" Text="Licensed customer releases require LicensePublicKeyFile (public P-256 JWK only)." />
   </Target>
 </Project>

@@ -55,13 +55,20 @@ assert(build.includes("'llamaEngineDirectories','nativeModelPath','contextTokens
 assert(build.includes("'manifestVersion','provisionAiRuntime','useExistingStack','requireHashes','logging','updates','dependencyPins','enginePacks','models','services'"), 'installer does not synchronize runtime/update provisioning fields');
 
 const releaseRuntime = JSON.parse(fs.readFileSync('config/runtime.release.example.json','utf8'));
-const llamaPack = releaseRuntime.enginePacks.find(p => p.rid === 'win-x64' && p.component === 'llm' && p.platform === 'nvidia');
-assert(llamaPack && llamaPack.id && llamaPack.version, 'release runtime must define a versioned Windows llama engine pack');
-assert(llamaPack.requiredFiles.includes('llama.dll') && llamaPack.requiredFiles.includes('ggml.dll'), 'llama engine pack required-file checks missing');
+const packMatrix = releaseRuntime.enginePacks[0];
+assert(packMatrix && packMatrix.cpu && packMatrix.cuda && packMatrix.vulkan, 'release runtime must define CPU/CUDA/Vulkan engine groups');
+assert(packMatrix.cuda.llm.url.includes('bin-win-cuda-13.3-x64.zip'), 'CUDA llama pack missing');
+assert(/^[A-F0-9]{64}$/.test(packMatrix.cuda.llm.sha256), 'CUDA llama hash missing');
+assert(packMatrix.cpu.asr.url.endsWith('/whisper-bin-x64.zip'), 'CPU Whisper must use the CPU archive');
+assert(packMatrix.cuda.asr.url.endsWith('/whisper-cublas-12.4.0-bin-x64.zip'), 'CUDA Whisper must use the cuBLAS archive');
 
 const installer = fs.readFileSync('src/wds.resone.launcher/EnginePackInstaller.cs','utf8');
 assert(installer.includes('Preparing {pack.Component} engine ({pack.EffectivePlatform})'), 'launcher engine-pack downloader missing');
 assert(installer.includes('ValidateRequiredFiles'), 'launcher does not validate extracted engine pack contents');
+assert(installer.includes('ExpandManifestPacks'), 'compact engine matrix normalization missing');
+assert(installer.includes('AddCompactBackend(result, "cuda"'), 'CUDA engine matrix support missing');
+assert(installer.includes('"nvidia" or "cuda" => "cuda"'), 'legacy NVIDIA to CUDA compatibility missing');
+assert(installer.includes('"amd" or "intel" or "vulkan" => "vulkan"'), 'AMD/Intel Vulkan compatibility missing');
 assert(installer.includes('PlatformEquals(p, "dynamic")'), 'dynamic engine pack selection missing');
 
 console.log('PASS in-process llama.cpp selection, shared AI_ROOT provisioning, warm model, streaming bridge, and platform mapping');

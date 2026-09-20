@@ -6,7 +6,7 @@ const js=read('src/wds.resone.ui/resources/web/app.js');
 const producer=read('src/wds.resone.api/SongCompositionDesigner.cs');
 const store=read('src/wds.resone.api/SongWorkspaceStore.cs');
 const worker=read('src/wds.resone.launcher/WorkerHost.cs');
-for(const id of ['libraryToggle','leftTrack','songList','songIdentity','songTitle','deleteSong','saveNew'])
+for(const id of ['libraryToggle','leftTrack','songList','songIdentity','songTitle','songNotesToggle','songNotesPanel','producerNotesText','composerNotesText','deleteSong','saveNew'])
   must(html.includes(`id="${id}"`)||html.includes(`class="${id}"`),`missing song workspace UI ${id}`);
 for(const op of ['workspaceList','workspaceLoad','workspaceSave','workspaceDelete'])
   must(js.includes(`'${op}'`)||js.includes(`"${op}"`),`missing browser workspace operation ${op}`);
@@ -26,3 +26,6 @@ must(js.includes("const newWorkspaceId = () => crypto.randomUUID().replaceAll('-
 must(store.includes('Guid.TryParseExact(id, "N"') && store.includes('Guid.TryParseExact(id, "D"'),'workspace store must accept both compact and browser UUID formats');
 must(js.includes("typeof workspaceLoadRequest !== 'undefined' && workspaceLoadRequest && j.requestId === workspaceLoadRequest") && js.includes('workspaceBootstrapped=true'),'failed last-workspace load must not disable later autosaves');
 console.log('PASS JSON song workspaces, history navigation, producer titles, rename/delete, and Save & New');
+
+must(js.includes('function renderSongNotes()') && js.includes('workspaceProducerDesign') && js.includes('workspaceComposerOverview'),'piece notes drawer must render saved producer and composer context');
+must(js.includes("$('songNotesToggle').onclick") && js.includes('aria-expanded'),'piece notes document toggle wiring missing');

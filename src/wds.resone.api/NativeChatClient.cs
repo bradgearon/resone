@@ -64,6 +64,11 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
         {
             return await Task.Run(() => EnsureLoaded(settings, diagnostic), token).ConfigureAwait(false);
         }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            MarkRuntimeFailure(e);
+            throw;
+        }
         finally
         {
             Gate.Release();
@@ -104,6 +109,7 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
         catch (Exception e)
         {
             log.Fail(e, "");
+            if (e is not OperationCanceledException) MarkRuntimeFailure(e);
             throw;
         }
         finally
@@ -121,8 +127,6 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
         var visible = new VisibleOutputFilter(text =>
         {
             result.Append(text);
-            if (result.Length > 65536)
-                throw new InvalidDataException("Model output exceeds Resone's 65536-character safety limit.");
             delta?.Invoke(text);
         });
         Exception? callbackError = null;
@@ -313,6 +317,13 @@ public sealed class NativeChatClient(ResoneSettings settings) : ILocalChatModelC
             loadedDescription = $"llama.cpp in-process; engine={engine}; model={gguf}; context={settings.ContextTokens}; gpuLayers={actualGpuLayers}; flashAttention={settings.FlashAttention}; thinking=off; streaming=on";
             return loadedDescription;
         }
+    }
+
+
+    private static void MarkRuntimeFailure(Exception error)
+    {
+        string reason = $"{error.GetType().Name}: {error.Message}";
+        Wds.Resone.Api.AiRuntimeIntegrity.RequestLlmReverification(reason);
     }
 
     private static string Error(byte[] bytes)

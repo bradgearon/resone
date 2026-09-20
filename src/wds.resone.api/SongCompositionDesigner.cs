@@ -6,7 +6,10 @@ namespace Wds.Resone.Api;
 /// <summary>First full-song pass: plain-text producer notes only. It never emits notes or MIDI.</summary>
 public static class SongCompositionDesigner
 {
-    public static async Task<string> CreateAsync(ILocalChatModelClient model, string brief, int tempo, string meter, int targetBars, bool useAhd, string existingComposerOverview, CancellationToken token)
+    public static Task<string> CreateAsync(ILocalChatModelClient model, string brief, int tempo, string meter, int targetBars, bool useAhd, string existingComposerOverview, CancellationToken token)
+        => CreateAsync(model, brief, tempo, meter, targetBars, useAhd, existingComposerOverview, "", token);
+
+    public static async Task<string> CreateAsync(ILocalChatModelClient model, string brief, int tempo, string meter, int targetBars, bool useAhd, string existingComposerOverview, string genreContext, CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(brief)) throw new ArgumentException("A song brief is required.", nameof(brief));
         if (tempo is < 30 or > 240) throw new ArgumentOutOfRangeException(nameof(tempo));
@@ -52,7 +55,7 @@ IMPORTANT SECTION FORMAT CONTRACT:
 Rules:
 - Song title is a short evocative title (normally 2–6 words) for this specific song. Do not quote it and do not reuse the user's request verbatim unless it already reads like a title.
 - NEVER use placeholder titles such as `Untitled Song`, `Untitled`, `New Song`, or just `Song`.
-- Overall identity includes the genre/subgenre when one is implied or requested, plus the defining sonic identity.
+- Overall identity includes the genre/subgenre when one is implied or requested, plus the defining sonic identity. When a genre is inferable, begin this line with the clearest genre/subgenre phrase (primary genre first for hybrids) so later deterministic genre-guide retrieval can recognize it. Do not invent a genre when the request is intentionally genre-neutral.
 - Motif strategy says what should recur, answer, counter, transform, be withheld, or return. Describe ideas; do not invent literal notes. When call/response matters, distinguish an answer that develops the statement from a counter that deliberately contrasts or reframes it; later composers will realize both from remembered note positions using Continuation relationships.
 - Rhythmic strategy defines the pulse/groove development at a useful high level, including useful variation in the delivery of answers/counters rather than literal rhythmic copying.
 - Sections must be an ordered list. Give every section a stable id in square brackets and an integer Bars value.
@@ -72,12 +75,20 @@ Rules:
             .AppendLine($"Approximate total length: {targetBars} bars")
             .AppendLine($"Anchored Harmonic Divergence: {(useAhd ? "enabled" : "disabled")}");
 
+        if (!string.IsNullOrWhiteSpace(genreContext))
+        {
+            user.AppendLine()
+                .AppendLine("RETRIEVED GENRE GUIDANCE")
+                .AppendLine("Use this to make the producer plan develop like the detected genre, while keeping the user's request authoritative. This is a best-effort retrieval and may be absent when no confident genre match exists.")
+                .AppendLine(genreContext);
+        }
+
         if (!string.IsNullOrWhiteSpace(existingComposerOverview))
         {
             user.AppendLine()
                 .AppendLine("EXISTING SONG COMPOSER OVERVIEW")
                 .AppendLine("This request modifies an existing song. Preserve the established musical identity below unless the new request explicitly asks to change it. Use it when deciding section roles, recurring/answering/countering material, harmony, and payoff strategy; do not copy its notation into the producer outline.")
-                .AppendLine(existingComposerOverview.Length > 24000 ? existingComposerOverview[..24000] : existingComposerOverview);
+                .AppendLine(existingComposerOverview);
         }
 
         string userText = user.ToString();
@@ -88,7 +99,17 @@ Rules:
             null,
             token).ConfigureAwait(false)).Trim();
         if (string.IsNullOrWhiteSpace(design)) throw new InvalidDataException("The song producer returned empty notes.");
-        return design.Length > 24000 ? design[..24000] : design;
+        return design;
+    }
+
+    public static string ExtractOverallIdentity(string design)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            design ?? "",
+            @"(?im)^\s*(?:[-*]\s*)?(?:\*{1,2})?Overall\s+identity(?:\*{1,2})?\s*:\s*(?:\*{1,2})?(?<identity>[^\r\n]+)");
+        if (!match.Success) return "";
+        string identity = string.Join(' ', match.Groups["identity"].Value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).Trim();
+        return identity.Length > 1000 ? identity[..1000] : identity;
     }
 
     public static string ExtractTitle(string design, string fallbackBrief)

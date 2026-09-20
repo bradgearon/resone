@@ -72,3 +72,23 @@ body.midiDropActive::after{content:'Drop MIDI to import into the selected lane';
 #pitchRuler{width:54px;flex:0 0 54px;position:relative;z-index:3;background:#17242d;border-right:1px solid var(--line);padding-top:26px;overflow:hidden}
 .pitchRulerLane{position:relative;border-bottom:1px solid #3b5363;overflow:hidden}.pitchRulerCell{position:absolute;left:0;right:0;display:flex;align-items:center;justify-content:flex-end;padding-right:5px;border-bottom:1px solid transparent;font-size:8px;line-height:1;white-space:nowrap;color:#87949e}.pitchRulerCell.inScale{color:var(--blue);background:#68b3ff0d;border-bottom-color:#68b3ff36}.pitchRulerCell.outScale{color:#87949e;background:#75818a0c;border-bottom-color:#71808a35}.pitchRulerCell.tonic{color:#e4f4ff;background:#68b3ff24;border-bottom-color:#9bd1ff;font-weight:700}.pitchRulerCell.tonic::after{content:'ONIC';font-size:6px;margin-left:1px;letter-spacing:.02em;color:#9fd4f7}
 @media(max-width:1150px){#pitchRuler{width:48px;flex-basis:48px}.zoomControls #zoomY{width:65px}.rollKey{display:none}}
+
+
+/* Piece producer/composer notes drawer. It lives inside the top composer panel so
+   the document button can reveal the song's planning context without changing views. */
+.composer{position:relative}
+.songIdentity{position:relative;z-index:10}
+.songTitle{flex:0 1 auto}
+.songNotesToggle{width:27px;height:27px;padding:4px;display:inline-grid;place-items:center;flex:0 0 27px}
+.songNotesToggle svg{width:15px;height:17px;fill:none;stroke:currentColor;stroke-width:1.45;stroke-linecap:round;stroke-linejoin:round}
+.songNotesToggle.active{color:var(--blue);background:#29435a;border:1px solid #4d789d}
+.songNotesPanel{position:absolute;z-index:9;left:11px;right:11px;top:72px;bottom:11px;display:flex;flex-direction:column;min-height:0;padding:12px;border:1px solid #3b566a;border-radius:9px;background:linear-gradient(145deg,#172733f7,#111e28fa);box-shadow:0 9px 28px #07121c99}
+.songNotesPanel[hidden]{display:none}
+.songNotesHeader{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:0 2px 9px;border-bottom:1px solid var(--line);flex:0 0 auto}
+.songNotesHeader strong{font-size:12px;font-weight:600;color:#d9ebf8}
+.songNotesHeader small{font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.songNotesGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;min-height:0;flex:1;padding-top:10px}
+.songNoteCard{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid #2d4352;border-radius:7px;background:#101d27b8;overflow:hidden}
+.songNoteCard h3{margin:0;padding:7px 9px;border-bottom:1px solid #263b49;font-size:10px;font-weight:600;letter-spacing:.25px;color:#9ccdf4;text-transform:uppercase}
+.songNoteCard pre{margin:0;padding:9px 10px;min-height:0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;font:10px/1.5 'Segoe UI',sans-serif;color:#c8d7e2}
+@media(max-width:1050px){.songNotesPanel{top:72px}.songNotesGrid{grid-template-columns:1fr}.songNoteCard pre{max-height:130px}}

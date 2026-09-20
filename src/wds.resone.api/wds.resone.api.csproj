@@ -12,8 +12,12 @@
   <PropertyGroup Condition="'$(CustomerRelease)' == 'true'">
     <DefineConstants>$(DefineConstants);RESONE_CUSTOMER_RELEASE</DefineConstants>
   </PropertyGroup>
-  <Target Name="PackResoneInstructions" BeforeTargets="CoreCompile" Condition="'$(CustomerRelease)' == 'true'">
-    <Exec Command="node &quot;$(MSBuildProjectDirectory)/../../scripts/pack-instructions.mjs&quot; &quot;$(MSBuildProjectDirectory)/../../assets/Instructions/Music&quot; &quot;$(IntermediateOutputPath)PackedInstructions.g.cs&quot;" />
+  <PropertyGroup Condition="'$(CustomerRelease)' == 'true' and '$(ResoneEncryptInstructions)' == 'true'">
+    <DefineConstants>$(DefineConstants);RESONE_ENCRYPTED_INSTRUCTIONS</DefineConstants>
+  </PropertyGroup>
+  <Target Name="PackResoneInstructions" BeforeTargets="CoreCompile" Condition="'$(CustomerRelease)' == 'true' and '$(ResoneEncryptInstructions)' == 'true'">
+    <Error Condition="!Exists('$(InstructionKeyFile)')" Text="Encrypted production instructions require InstructionKeyFile (base64-encoded 32-byte AES key)." />
+    <Exec Command="node &quot;$(MSBuildProjectDirectory)/../../scripts/pack-instructions.mjs&quot; &quot;$(MSBuildProjectDirectory)/../../assets/Instructions/Music&quot; &quot;$(IntermediateOutputPath)PackedInstructions.g.cs&quot; &quot;$(InstructionKeyFile)&quot;" />
     <ItemGroup><Compile Include="$(IntermediateOutputPath)PackedInstructions.g.cs" /></ItemGroup>
   </Target>
 </Project>

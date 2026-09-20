@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text.Json;
 using Wds.Resone.Api;
 using Wds.Resone.Api.Updates;
@@ -17,10 +18,29 @@ static string? Arg(string[] args, string name)
     return null;
 }
 
-string installRoot = Path.GetFullPath(Arg(args, "--install-root") ?? throw new ArgumentException("--install-root is required."));
+InstallationPreferences preferences = InstallationPreferences.Load();
+string installRoot = Path.GetFullPath(Arg(args, "--install-root") ?? preferences.InstallRoot ?? throw new ArgumentException("--install-root is required when no installer preferences are available."));
 string targetVersion = Arg(args, "--target-version") ?? "";
-string? aiRoot = Arg(args, "--ai-root");
+string? aiRoot = Arg(args, "--ai-root") ?? preferences.AiRoot ?? AiRuntimeRoot.Resolve();
 int parentPid = int.TryParse(Arg(args, "--parent-pid"), out int parsedPid) ? parsedPid : 0;
+bool elevated = args.Contains("--elevated", StringComparer.OrdinalIgnoreCase);
+bool deferRelaunch = args.Contains("--defer-relaunch", StringComparer.OrdinalIgnoreCase);
+
+if (OperatingSystem.IsWindows() && !elevated && RequiresElevation(installRoot, preferences))
+{
+    int elevatedExit = await RunElevatedCopyAsync(args, CancellationToken.None);
+    RuntimeUpdateEnvelope afterEnvelope = await LoadLocalConfigAsync(installRoot, CancellationToken.None);
+    UpdatePolicy afterPolicy = afterEnvelope.Updates;
+    ConfigureLogging(afterEnvelope.Logging, installRoot);
+    string secondName = elevatedExit == 0 ? "--updated-from" : "--update-failed";
+    string? secondValue = elevatedExit == 0 ? targetVersion : null;
+    if (!TryLaunchLauncher(installRoot, afterPolicy, aiRoot, "--skip-update-once", secondName, secondValue, out Process? relaunched, out string relaunchError))
+        WindowsTrayNotice.Show("Resone could not restart", "The elevated update step finished, but Resone could not relaunch automatically. Start Resone from its normal shortcut. " + relaunchError);
+    else relaunched?.Dispose();
+    Environment.ExitCode = elevatedExit;
+    return;
+}
+
 RuntimeUpdateEnvelope envelope = await LoadLocalConfigAsync(installRoot, CancellationToken.None);
 UpdatePolicy policy = envelope.Updates;
 ConfigureLogging(envelope.Logging, installRoot);
@@ -77,7 +97,7 @@ try
     }
     else
     {
-        await RunInstallerAsync(download, app, installRoot, aiRoot, CancellationToken.None);
+        await RunInstallerAsync(download, app, installRoot, aiRoot, preferences, CancellationToken.None);
     }
 
     if (policy.AutoInstallInstallerArtifacts)
@@ -90,7 +110,7 @@ try
                 string artifact = await DownloadVerifiedAsync(http, policy, extra, workRoot, manifest.Version, CancellationToken.None);
                 if (!extra.InstallMode.Equals("installer", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException($"Non-app artifact {extra.Id} currently requires installMode=installer.");
-                await RunInstallerAsync(artifact, extra, installRoot, aiRoot, CancellationToken.None);
+                await RunInstallerAsync(artifact, extra, installRoot, aiRoot, preferences, CancellationToken.None);
             }
             catch (Exception error) when (!extra.Required)
             {
@@ -99,13 +119,18 @@ try
         }
     }
 
-    if (!TryLaunchLauncher(installRoot, policy, aiRoot, "--skip-update-once", "--updated-from", manifest.Version, out Process? launched, out string launchError))
-        throw new InvalidOperationException("Updated launcher could not be started: " + launchError);
+    SyncVst3IfConfigured(installRoot, preferences);
 
-    await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(policy.RelaunchHealthSeconds, 1, 15)));
-    if (launched is { HasExited: true })
-        throw new InvalidOperationException($"Updated launcher exited immediately with code {launched.ExitCode}.");
-    launched?.Dispose();
+    if (!deferRelaunch)
+    {
+        if (!TryLaunchLauncher(installRoot, policy, aiRoot, "--skip-update-once", "--updated-from", manifest.Version, out Process? launched, out string launchError))
+            throw new InvalidOperationException("Updated launcher could not be started: " + launchError);
+
+        await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(policy.RelaunchHealthSeconds, 1, 15)));
+        if (launched is { HasExited: true })
+            throw new InvalidOperationException($"Updated launcher exited immediately with code {launched.ExitCode}.");
+        launched?.Dispose();
+    }
 
     await UpdateStateStore.RecordSuccessAsync(policy);
     if (backupRoot != null) TryDeleteDirectory(backupRoot);
@@ -134,9 +159,12 @@ catch (Exception error)
         }
     }
 
-    if (!TryLaunchLauncher(installRoot, policy, aiRoot, "--skip-update-once", "--update-failed", null, out Process? fallback, out string relaunchError))
-        WindowsTrayNotice.Show("Resone could not restart", "The update failed and Resone could not relaunch automatically. Start Resone again from its normal launcher. " + relaunchError);
-    else fallback?.Dispose();
+    if (!deferRelaunch)
+    {
+        if (!TryLaunchLauncher(installRoot, policy, aiRoot, "--skip-update-once", "--update-failed", null, out Process? fallback, out string relaunchError))
+            WindowsTrayNotice.Show("Resone could not restart", "The update failed and Resone could not relaunch automatically. Start Resone again from its normal launcher. " + relaunchError);
+        else fallback?.Dispose();
+    }
 
     Environment.ExitCode = 2;
 }
@@ -306,11 +334,105 @@ static void ValidateStagedRuntimeVersion(string stage, string expected)
     catch (JsonException e) { throw new InvalidDataException("Updated runtime.json is invalid.", e); }
 }
 
-static async Task RunInstallerAsync(string path, UpdateArtifact artifact, string installRoot, string? aiRoot, CancellationToken token)
+static bool RequiresElevation(string installRoot, InstallationPreferences preferences)
+{
+    if (!OperatingSystem.IsWindows() || IsElevated()) return false;
+    if (IsProtectedProgramFilesPath(installRoot)) return true;
+    if (preferences.InstallVst3 && !string.IsNullOrWhiteSpace(preferences.Vst3Root) && IsProtectedProgramFilesPath(preferences.Vst3Root!)) return true;
+    try
+    {
+        Directory.CreateDirectory(installRoot);
+        string probe = Path.Combine(installRoot, ".resone-update-write-" + Guid.NewGuid().ToString("N"));
+        using (new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose)) { }
+        TryDelete(probe);
+        return false;
+    }
+    catch (UnauthorizedAccessException) { return true; }
+    catch (System.ComponentModel.Win32Exception) { return true; }
+    catch (IOException) { return false; }
+}
+
+static bool IsProtectedProgramFilesPath(string path)
+{
+    string full = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    foreach (string root in new[]
+    {
+        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles),
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFilesX86)
+    }.Where(x => !string.IsNullOrWhiteSpace(x)))
+    {
+        string protectedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (full.Equals(protectedRoot, StringComparison.OrdinalIgnoreCase) || full.StartsWith(protectedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            return true;
+    }
+    return false;
+}
+
+static bool IsElevated()
+{
+    if (!OperatingSystem.IsWindows()) return false;
+    using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+    return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+}
+
+static async Task<int> RunElevatedCopyAsync(string[] originalArgs, CancellationToken token)
+{
+    string executable = Environment.ProcessPath ?? throw new InvalidOperationException("Updater executable path is unavailable.");
+    var start = new ProcessStartInfo(executable)
+    {
+        UseShellExecute = true,
+        Verb = "runas",
+        WorkingDirectory = Environment.CurrentDirectory
+    };
+    foreach (string arg in originalArgs)
+        if (!arg.Equals("--elevated", StringComparison.OrdinalIgnoreCase) && !arg.Equals("--defer-relaunch", StringComparison.OrdinalIgnoreCase))
+            start.ArgumentList.Add(arg);
+    start.ArgumentList.Add("--elevated");
+    start.ArgumentList.Add("--defer-relaunch");
+    try
+    {
+        using Process process = Process.Start(start) ?? throw new InvalidOperationException("Could not start elevated Resone updater.");
+        await process.WaitForExitAsync(token);
+        return process.ExitCode;
+    }
+    catch (System.ComponentModel.Win32Exception error) when (error.NativeErrorCode == 1223)
+    {
+        WindowsTrayNotice.Show("Resone update canceled", "Administrator permission is required to update the selected Program Files/VST locations.");
+        return 1223;
+    }
+}
+
+static void SyncVst3IfConfigured(string installRoot, InstallationPreferences preferences)
+{
+    if (!preferences.InstallVst3 || string.IsNullOrWhiteSpace(preferences.Vst3Root)) return;
+    string source = Path.Combine(installRoot, "Resone.vst3");
+    if (!Directory.Exists(source)) return;
+    string destination = Path.Combine(preferences.Vst3Root!, "Resone.vst3");
+    try
+    {
+        CopyDirectory(source, destination);
+    }
+    catch (IOException error)
+    {
+        throw new IOException("Resone VST3 could not be updated because it appears to be in use. Close DAWs and plug-in scanners using Resone, then retry the update.", error);
+    }
+    catch (UnauthorizedAccessException error)
+    {
+        throw new UnauthorizedAccessException("Resone VST3 could not be updated at the configured system VST3 location.", error);
+    }
+}
+
+static async Task RunInstallerAsync(string path, UpdateArtifact artifact, string installRoot, string? aiRoot, InstallationPreferences preferences, CancellationToken token)
 {
     var start = new ProcessStartInfo(path) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(path)! };
     foreach (string arg in artifact.Arguments)
-        start.ArgumentList.Add(arg.Replace("{installRoot}", installRoot).Replace("{aiRoot}", aiRoot ?? ""));
+        start.ArgumentList.Add(arg
+            .Replace("{installRoot}", installRoot)
+            .Replace("{aiRoot}", aiRoot ?? preferences.AiRoot ?? "")
+            .Replace("{vst3Root}", preferences.Vst3Root ?? "")
+            .Replace("{installVst3}", preferences.InstallVst3 ? "1" : "0"));
     using Process process = Process.Start(start) ?? throw new InvalidOperationException("Installer process could not be started: " + artifact.Id);
     await process.WaitForExitAsync(token);
     if (process.ExitCode != 0) throw new InvalidOperationException($"Installer {artifact.Id} failed with exit code {process.ExitCode}.");

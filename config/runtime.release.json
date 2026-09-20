@@ -1,0 +1,169 @@
+{
+  "manifestVersion": 2,
+  "provisionAiRuntime": true,
+  "useExistingStack": false,
+  "requireHashes": true,
+  "release": {
+    "licensingEnabled": false,
+    "encryptInstructions": false
+  },
+  "logging": {
+    "directory": "logs",
+    "retentionDays": 14
+  },
+  "updates": {
+    "enabled": false,
+    "currentVersion": "0.1.0-dev",
+    "channel": "stable",
+    "manifestUrl": "https://resone.io/api/updates/resone/stable.json",
+    "checkTimeoutSeconds": 8,
+    "downloadAttempts": 3,
+    "retryDelaySeconds": 2,
+    "failedUpdateRetryMinutes": 15,
+    "parentExitTimeoutSeconds": 60,
+    "relaunchHealthSeconds": 2,
+    "notifyAfterConsecutiveFailures": 3,
+    "manifestMaxBytes": 2097152,
+    "defaultArchiveMaxBytes": 2147483648,
+    "defaultExtractedMaxBytes": 4294967296,
+    "updaterExecutable": "wds.resone.updater.exe",
+    "launcherExecutable": "wds.resone.launcher.exe",
+    "updateWorkDirectory": "ResoneUpdate",
+    "requireHttps": true,
+    "requireHashes": true,
+    "verifyExtractedFiles": true,
+    "autoInstallInstallerArtifacts": true,
+    "preservePaths": [
+      "user"
+    ]
+  },
+  "dependencyPins": {
+    "llama.cpp": {
+      "repository": "https://github.com/ggerganov/llama.cpp.git",
+      "gitRef": "2d973636e292ee6f75fadcf08d29cb33511f509f"
+    },
+    "qwentts.cpp": {
+      "repository": "https://github.com/ServeurpersoCom/qwentts.cpp.git",
+      "gitRef": "a8a7716b530e49fed537c57711247c12fbbb903c"
+    },
+    "iPlug2": {
+      "repository": "https://github.com/iPlug2/iPlug2.git",
+      "gitRef": "d54f69050f517e43b941d88c2a170f0a840b9ee4"
+    },
+    "vst3sdk": {
+      "repository": "https://github.com/steinbergmedia/vst3sdk.git",
+      "gitRef": "9fad9770f2ae8542ab1a548a68c1ad1ac690abe0"
+    },
+    "vcpkg": {
+      "repository": "https://github.com/microsoft/vcpkg.git",
+      "gitRef": "1577f17ee57f42a0ef6d75bbb82cb37d0b76d7e8"
+    }
+  },
+  "enginePacks": [
+    {
+      "cpu": {
+        "llm": {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10724/llama-b10724-bin-win-cpu-x64.zip",
+          "sha256": "287B320F2B217809E24E0A7459A25E627B8785223080667D9ECF575253EF0762",
+          "enabled": true,
+          "directory": "engines/llm/llama-cpp-dynamic-win-x64"
+        },
+        "tts": {
+          "url": "https://YOUR-DOWNLOAD-HOST/qwenttscpp-cpu-win-x64-v1.zip",
+          "sha256": "REPLACE_WITH_64_HEX_SHA256",
+          "enabled": false,
+          "directory": "engines/tts/qwenttscpp-nvidia-win-x64"
+        },
+        "asr": {
+          "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b4938/whisper-bin-x64.zip",
+          "sha256": "C2A4B60EDB11F7E11A9191FFB50929535527D4D91C9903DBE3E554583BBBC63D",
+          "enabled": false,
+          "directory": "engines/asr/whispercpp-nvidia-win-x64"
+        }
+      },
+      "cuda": {
+        "llm": {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10724/llama-b10724-bin-win-cuda-13.3-x64.zip",
+          "sha256": "D46CB57B73F68E52D5DD142574061E32F7AD3865282C351F2ABB6C08A1279CE9",
+          "enabled": true,
+          "directory": "engines/llm/llama-cpp-dynamic-win-x64"
+        },
+        "tts": {
+          "url": "https://github.com/bradgearon/qwentts-cpp-builds/releases/download/a8a77/qwenttscpp-cuda-win-x64-v1.zip",
+          "sha256": "34FA97EEB28A3ACBB05D8DD62B0A7D74FD161D2A558605DB765C960EE70A7533",
+          "enabled": true,
+          "directory": "engines/tts/qwenttscpp-nvidia-win-x64"
+        },
+        "asr": {
+          "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b4938/whisper-cublas-12.4.0-bin-x64.zip",
+          "sha256": "C1B17166E1E31A91CC8E9C1F910D3785E3CE757BB2958BF9DCE13FDB4880005F",
+          "enabled": true,
+          "directory": "engines/asr/whispercpp-nvidia-win-x64"
+        }
+      },
+      "vulkan": {
+        "llm": {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10724/llama-b10724-bin-win-vulkan-x64.zip",
+          "sha256": "0C8147447EA91103E8E1179249F1F9D2D1EBA7EA3782F0C2B0AF52695A5F813C",
+          "enabled": true,
+          "directory": "engines/llm/llama-cpp-dynamic-win-x64"
+        },
+        "tts": {
+          "url": "https://YOUR-DOWNLOAD-HOST/qwenttscpp-vulkan-win-x64-v1.zip",
+          "sha256": "REPLACE_WITH_64_HEX_SHA256",
+          "enabled": false,
+          "directory": "engines/tts/qwenttscpp-nvidia-win-x64"
+        },
+        "asr": {
+          "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b4938/whisper-bin-x64.zip",
+          "sha256": "C2A4B60EDB11F7E11A9191FFB50929535527D4D91C9903DBE3E554583BBBC63D",
+          "enabled": false,
+          "directory": "engines/asr/whispercpp-nvidia-win-x64"
+        }
+      }
+    }
+  ],
+  "models": [
+    {
+      "enabled": true,
+      "id": "gemma-4-e4b-q6k",
+      "version": "1",
+      "path": "models/llm/gemma-4-E4B-it-Q6_K.gguf",
+      "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q6_K.gguf",
+      "sha256": "FD83F3EF44D22E00FF0F638753DDE9A66A83E8CCF79C11024F47D383C489531B"
+    },
+    {
+      "enabled": true,
+      "id": "whisper-large-v3-turbo",
+      "version": "1",
+      "path": "models/asr/ggml-large-v3-turbo.bin",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+      "sha256": "1FC70F774D38EB169993AC391EEA357EF47C88757EF72EE5943879B7E8E2BC69"
+    },
+    {
+      "enabled": true,
+      "id": "qwen-talker-base-0.6b-q8",
+      "version": "1",
+      "path": "models/tts/qwen-talker-0.6b-base-Q8_0.gguf",
+      "url": "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-talker-0.6b-base-Q8_0.gguf",
+      "sha256": "D54DBAF10591421FA764ED630D764EFA717AE40CD959BD48C66D4EB1AF226426"
+    },
+    {
+      "enabled": true,
+      "id": "qwen-talker-voicedesign-1.7b-q8",
+      "version": "1",
+      "path": "models/tts/qwen-talker-1.7b-voicedesign-Q8_0.gguf",
+      "url": "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-talker-1.7b-voicedesign-Q8_0.gguf",
+      "sha256": "575610AB1DDCCA4DCA6BD9A64BCD859D93BBAD8764F9CAB24E1DBC0C51F62276"
+    },
+    {
+      "enabled": true,
+      "id": "qwen-tokenizer-12hz-q8",
+      "version": "1",
+      "path": "models/tts/qwen-tokenizer-12hz-Q8_0.gguf",
+      "url": "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-tokenizer-12hz-Q8_0.gguf",
+      "sha256": "1883BEEED99348FC35E23DD225E9082F93F6F8C109330A33D935BAA8ACDBFD94"
+    }
+  ],
+  "services": []
+}

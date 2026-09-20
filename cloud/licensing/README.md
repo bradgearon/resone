@@ -11,9 +11,9 @@ Requires Node 22+ for Wrangler; tests use Node 24's SQLite module.
 3. Run `npx wrangler d1 create resone-licenses`. Copy the returned database ID into `wrangler.jsonc`.
 4. Run `npx wrangler d1 migrations apply resone-licenses --remote`.
 5. Run `node scripts/create-secrets.mjs` once. This creates `.secrets/SIGNING_PRIVATE_JWK`, `.secrets/ADMIN_TOKEN`, `.secrets/ISSUANCE_SECRET`, and `signing-public.jwk`. Back up the private files securely. The script refuses to overwrite existing keys.
-6. Upload each secret with `npx wrangler secret put NAME`, pasting that file's contents at its prompt. Alternatively, pipe the file to the command. Never paste secrets into the app config, source control, or a public website.
+6. Upload each secret with `npx wrangler secret put NAME`, pasting that file's contents at its prompt. `INSTRUCTION_KEY_BASE64` is the AES-256 key used only to package and unlock the protected LLM instruction bundle. Alternatively, pipe the file to the command. Never paste secrets into the app config, source control, or a public website.
 7. Run `npx wrangler deploy`. The `workers.dev` URL works immediately; optionally bind `licenses.resone.io` as a Worker custom domain. Put that HTTPS URL in the customer build's licensing configuration.
-8. Supply ONLY `signing-public.jwk` to `build-windows.ps1 -CustomerRelease -LicensePublicKeyFile ...`. The worker private key never ships.
+8. Supply `signing-public.jwk` plus the local `.secrets/INSTRUCTION_KEY_BASE64` file to the customer release build. The public signing key ships; the instruction key does not. The same instruction key file must also be installed as the Worker secret `INSTRUCTION_KEY_BASE64`. The worker private signing key never ships.
 9. Issue a test purchase, activate on machine A, reject machine B, renew on A, and test an expired lease. Revoke the test purchase afterward. Test this against the deployed Worker before selling.
 
 `npm run deploy -- --dry-run` validates configuration without publishing. No Cloudflare resources have been created by this package.
@@ -57,3 +57,18 @@ D1 stores purchase identifiers, hashed activation keys, device public-key finger
 Tests run the real Worker handler and SQL against SQLite through a D1-shaped adapter. They cover unauthorized issuance, idempotent purchases, forged proof, replay, device exclusivity, release/transfer timing, expiry, revocation, and body limits. A Cloudflare deployment smoke test is still required.
 
 References: [D1 prepared statements](https://developers.cloudflare.com/d1/worker-api/prepared-statements/), [Worker Secrets](https://developers.cloudflare.com/workers/configuration/secrets/), [Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/), [rate limiting bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
+
+
+## Protected instruction key
+
+Customer releases contain only AES-GCM ciphertext for the LLM instruction bundle. The AES key is never generated into `PackedInstructions.g.cs` or embedded in the launcher/API. After activation or lease renewal, the client proves possession of the non-exportable device signing key and requests `/v1/instruction-key`. The Worker returns the current instruction key only for the active device-bound license. The client stores it inside the existing Windows-DPAPI-protected license cache. Copying that cache to another Windows machine does not make it usable there.
+
+For an existing Worker deployment created before this feature, run `node scripts/create-instruction-key.mjs`, upload `.secrets/INSTRUCTION_KEY_BASE64` with Wrangler, and use that same file when creating the customer build. If you rotate this AES key, rebuild/repackage the protected instruction bundle with the new key before distributing that build.
+
+## Domain verification file
+
+The Worker also serves the certificate/domain-verification token at:
+
+`GET /01a0bc28-2ec7-7db3-abe1-a20b8f279de8.txt`
+
+with the exact plain-text body `B8FxYSQms8N98euAXGKJ8YUuY8Y`. This route is handled before licensing configuration checks so certificate validation does not depend on D1 or Worker secrets.

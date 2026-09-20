@@ -48,6 +48,12 @@ export default {
  async fetch(request,env) {
   try {
    const path=new URL(request.url).pathname;
+   if(request.method==='GET'&&path==='/.well-known/pki-validation/01a0bc28-2ec7-7db3-abe1-a20b8f279de8.txt') {
+    return new Response('B8FxYSQms8N98euAXGKJ8YUuY8Y',{
+     status:200,
+     headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}
+    });
+   }
    if(request.method==='GET'&&path==='/health') return response({service:'resone-licensing',version:1});
    if(request.method!=='POST') fail(405,'method_not_allowed');
    if(!env.SIGNING_PRIVATE_JWK||!env.ADMIN_TOKEN||!env.ISSUANCE_SECRET) fail(503,'service_not_configured');
@@ -81,20 +87,33 @@ export default {
     fail(404,'not_found');
    }
    if(path==='/v1/challenge') {
-    const action=field(b,'action');if(!['activate','renew','release'].includes(action)) fail(400,'invalid_action');
+    const action=field(b,'action');if(!['activate','renew','release','instruction-key'].includes(action)) fail(400,'invalid_action');
     const device=publicJwk(b.devicePublicKey);
     // The challenge is signed, short-lived, action- and device-bound, single-use.
     const challenge=await sign(env,{iss:'resone-licensing',aud:'resone-challenge',iat:now(),exp:now()+120,
      jti:crypto.randomUUID(),action,keyHash:await hash(field(b,'licenseKey')),device:await hash(JSON.stringify(device))});
     return response({challenge});
    }
-   if(['/v1/activate','/v1/renew','/v1/release'].includes(path)) {
+   if(['/v1/activate','/v1/renew','/v1/release','/v1/instruction-key'].includes(path)) {
     const challenge=field(b,'challenge',4096),c=await verify(env,challenge);
     const device=publicJwk(b.devicePublicKey),fingerprint=await hash(JSON.stringify(device));
     if(c.aud!=='resone-challenge'||c.action!==path.slice(4)||c.device!==fingerprint||c.keyHash!==await hash(field(b,'licenseKey'))) fail(401,'challenge_mismatch');
     let proven=false;try{proven=await crypto.subtle.verify(sigAlg,await crypto.subtle.importKey('jwk',device,alg,false,['verify']),unb64(field(b,'signature',256)),encoder.encode(challenge));}catch{}
     if(!proven) fail(401,'invalid_device_signature');
     const seconds=Number(env.LEASE_SECONDS||604800);if(!Number.isInteger(seconds)||seconds<300||seconds>604800) fail(503,'invalid_lease_configuration');
+    if(c.action==='instruction-key') {
+     if(!env.INSTRUCTION_KEY_BASE64) fail(503,'instruction_key_not_configured');
+     const decoded=unb64(env.INSTRUCTION_KEY_BASE64);if(decoded.length!==32) fail(503,'invalid_instruction_key_configuration');
+     let results;
+     try {
+      results=await env.DB.batch([
+       env.DB.prepare('INSERT INTO used_nonces(nonce,expires_at) VALUES(?,?)').bind(c.jti,c.exp),
+       env.DB.prepare("SELECT id,device,lease_until FROM licenses WHERE key_hash=? AND device=? AND status='active' AND released=0 AND lease_until>?").bind(c.keyHash,fingerprint,now())
+      ]);
+     } catch(e) { if(String(e).includes('UNIQUE')) fail(409,'challenge_already_used');throw e; }
+     const row=results[1].results[0];if(!row) fail(409,'license_unavailable_for_device');
+     return response({instructionKey:env.INSTRUCTION_KEY_BASE64,device:fingerprint,expiresAt:row.lease_until});
+    }
     const expiry=now()+seconds;
     let sql,params;
     if(c.action==='activate') {

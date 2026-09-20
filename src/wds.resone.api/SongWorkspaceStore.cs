@@ -150,9 +150,9 @@ public sealed class SongWorkspaceStore
             meta.Id = id;
             meta.Title = title;
             if (producerDesign is not null)
-                meta.ProducerDesign = producerDesign.Length > 24000 ? producerDesign[..24000] : producerDesign;
+                meta.ProducerDesign = producerDesign;
             if (composerDesign is not null)
-                meta.ComposerDesign = composerDesign.Length > 24000 ? composerDesign[..24000] : composerDesign;
+                meta.ComposerDesign = composerDesign;
             meta.UpdatedUtc = now;
 
             var writes = new List<Task>

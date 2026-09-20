@@ -20,6 +20,7 @@ internal sealed class WhisperCppRuntime(HttpClient http, ResoneSettings settings
     private Uri? inferenceUri;
     private string? description;
     private bool disposed;
+    private bool runtimeEnsured;
 
     public bool EnabledForThisPlatform
         => settings.UseLocalWhisper && OperatingSystem.IsWindows() &&
@@ -30,6 +31,12 @@ internal sealed class WhisperCppRuntime(HttpClient http, ResoneSettings settings
         ThrowIfDisposed();
         if (!EnabledForThisPlatform)
             return "Whisper HTTP compatibility mode";
+
+        if (!runtimeEnsured)
+        {
+            await LauncherBootstrap.EnsureRuntimeComponentAsync("asr", token).ConfigureAwait(false);
+            runtimeEnsured = true;
+        }
 
         await gate.WaitAsync(token).ConfigureAwait(false);
         try

@@ -47,16 +47,21 @@ Six Stars should use the same `AI_ROOT` resolution contract when it is migrated.
 
 Changing any managed package `version`, `url`, or `sha256` makes the launcher replace that package on the next start. Downloads are staged and verified before an engine directory is atomically swapped into place. Models use resumable `.partial` files and are moved into place only after verification.
 
-Engine packs also declare:
+Engine packs can use the compact backend matrix used by the release manifest:
 
-- `component`: `llm`, `asr`, or `tts`
-- `rid`: for example `win-x64`
-- `platform`: `nvidia`, `amd`, `intel`, `apple`, `cpu`, or `dynamic`
-- `directory`: destination beneath `AI_ROOT`
-- `requiredFiles`: sanity check after extraction
-- optional `stripComponents`: number of leading ZIP path components to remove
+```json
+"enginePacks": [
+  {
+    "cpu":    { "llm": { "url": "...", "sha256": "..." }, "tts": { "url": "...", "sha256": "..." }, "asr": { "url": "...", "sha256": "..." } },
+    "cuda":   { "llm": { "url": "...", "sha256": "..." }, "tts": { "url": "...", "sha256": "..." }, "asr": { "url": "...", "sha256": "..." } },
+    "vulkan": { "llm": { "url": "...", "sha256": "..." }, "tts": { "url": "...", "sha256": "..." }, "asr": { "url": "...", "sha256": "..." } }
+  }
+]
+```
 
-The launcher detects the display-adapter vendor on Windows and chooses an exact platform pack when available, then `dynamic`, then `cpu`. `AI_PLATFORM=nvidia|amd|intel|apple|cpu` overrides detection for testing.
+For compact entries the launcher derives stable IDs, version `1`, Windows RID, install directory, and component sanity checks. Any compact asset can still override `id`, `version`, `directory`, `requiredFiles`, `stripComponents`, `maxArchiveBytes`, or `maxExtractedBytes`; setting `enabled: false` skips that asset. An enabled asset may also declare `additionalArchives`, each with its own HTTPS `url`, SHA-256, optional `stripComponents`, and size limits. Companion archives are verified and overlaid into the same engine directory before required-file validation; their URLs/hashes are included in the installed receipt fingerprint so changing a companion forces the engine to refresh. The official Windows whisper.cpp archives use a top-level `Release/` folder, so the checked-in ASR entries set `stripComponents: 1`. Older flat engine-pack records remain supported for compatibility.
+
+On Windows the launcher maps NVIDIA adapters to the `cuda` group, AMD/Intel adapters to `vulkan`, and machines without a supported display adapter to `cpu`. `AI_PLATFORM=cuda|vulkan|cpu` overrides detection for testing; the older `nvidia`, `amd`, and `intel` names are normalized for compatibility.
 
 After selection, the launcher writes `engines/<component>/.active`. Runtime code follows that pointer, so appsettings does not need a different path for every GPU vendor. If there is no managed active engine yet, development builds fall back to the existing configured source-tree engine path.
 
@@ -72,7 +77,7 @@ After selection, the launcher writes `engines/<component>/.active`. Runtime code
 ```
 
 3. Upload the ZIP to HTTPS storage.
-4. Update its manifest entry: `version`, `url`, `sha256`; set `enabled: true` when ready.
+4. Update its backend/component manifest entry with the new `url` and `sha256`. Add or bump optional `version` when you want an explicit publisher version; set `enabled: false` to hold an asset back.
 5. On the next launcher start, machines for that RID/platform install the new pack before the worker loads it.
 
 ## Publishing a model version

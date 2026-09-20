@@ -165,23 +165,26 @@ void AudioEngine::run() {
     try {
 #ifdef _WIN32
         const auto vcpkgBin = home_ / "third_party/vcpkg/installed/x64-windows/bin";
+        const auto packagedFluid = home_ / "third_party/libfluidsynth";
         const bool developmentTree = std::filesystem::is_regular_file(home_ / "Wds.Resone.sln");
         std::vector<std::filesystem::path> candidates;
         if (developmentTree) {
-            // A source-tree run should use the vcpkg FluidSynth build together
-            // with the dependency DLLs that were installed beside it. A copied
-            // root-level libfluidsynth can exist while its transitive DLLs do not.
+            // Source-tree runs continue to use vcpkg directly so the development
+            // dependency graph remains in one place. Installed builds use the
+            // dedicated third_party/libfluidsynth payload instead.
             candidates = {vcpkgBin / "libfluidsynth-3.dll", vcpkgBin / "fluidsynth.dll",
+                          packagedFluid / "libfluidsynth-3.dll", packagedFluid / "fluidsynth.dll",
                           home_ / "libfluidsynth-3.dll"};
         } else {
-            candidates = {home_ / "libfluidsynth-3.dll", vcpkgBin / "libfluidsynth-3.dll",
-                          vcpkgBin / "fluidsynth.dll"};
+            candidates = {packagedFluid / "libfluidsynth-3.dll", packagedFluid / "fluidsynth.dll",
+                          vcpkgBin / "libfluidsynth-3.dll", vcpkgBin / "fluidsynth.dll",
+                          home_ / "libfluidsynth-3.dll"};
         }
         std::filesystem::path dll = candidates.front();
         for (const auto &candidate : candidates) {
             if (std::filesystem::is_regular_file(candidate)) { dll = candidate; break; }
         }
-        std::vector<std::filesystem::path> dependencySearch{dll.parent_path(), home_, vcpkgBin};
+        std::vector<std::filesystem::path> dependencySearch{dll.parent_path(), packagedFluid, home_, vcpkgBin};
 #else
         auto dll = home_ / "libfluidsynth.so.3";
         std::vector<std::filesystem::path> dependencySearch{dll.parent_path(), home_};

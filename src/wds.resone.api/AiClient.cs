@@ -80,8 +80,6 @@ public sealed class LocalAiClient(HttpClient http, ResoneSettings settings) : IL
                 string text = c.GetString()!;
                 result.Append(text);
                 delta?.Invoke(text);
-                if (result.Length > 65536)
-                    throw new InvalidDataException("Model notation exceeds 65536 characters.");
             }
         }
 

@@ -53,6 +53,7 @@ public sealed class QwenTtsServiceManager : IAsyncDisposable
         [QwenTtsServiceKind.CustomVoice] = new(QwenTtsServiceKind.CustomVoice)
     };
     private bool disposed;
+    private bool runtimeEnsured;
 
     public QwenTtsServiceManager(ResoneSettings settings, string aiRoot, HttpClient http)
     {
@@ -71,9 +72,11 @@ public sealed class QwenTtsServiceManager : IAsyncDisposable
             var slot = slots[kind];
             slot.ScopeActive = active;
             TouchLocked(slot);
-            if (active)
+            // Opening the voice designer should not download the TTS runtime. The first actual
+            // synthesis request provisions it; after that, scope activation may warm it normally.
+            if (active && runtimeEnsured)
                 await EnsureStartedLockedAsync(slot, token, progress).ConfigureAwait(false);
-            else
+            else if (!active)
                 ScheduleIdleStopLocked(slot);
         }
         finally { gate.Release(); }
@@ -88,7 +91,10 @@ public sealed class QwenTtsServiceManager : IAsyncDisposable
             ThrowIfDisposed();
             var slot = slots[kind];
             TouchLocked(slot);
-            await EnsureStartedLockedAsync(slot, token, progress).ConfigureAwait(false);
+            // Lane/voice selection is only a warm hint. Never trigger a large first-use download
+            // until the user actually asks Resone to synthesize speech/voice audio.
+            if (runtimeEnsured)
+                await EnsureStartedLockedAsync(slot, token, progress).ConfigureAwait(false);
             ScheduleIdleStopLocked(slot);
         }
         finally { gate.Release(); }
@@ -208,6 +214,13 @@ public sealed class QwenTtsServiceManager : IAsyncDisposable
     private async Task EnsureStartedLockedAsync(Slot slot, CancellationToken token, Func<string, Task>? progress)
     {
         if (slot.IsRunning) return;
+
+        if (!runtimeEnsured)
+        {
+            if (progress is not null) await progress("Vocals · Preparing Qwen runtime…").ConfigureAwait(false);
+            await LauncherBootstrap.EnsureRuntimeComponentAsync("tts", token).ConfigureAwait(false);
+            runtimeEnsured = true;
+        }
 
         // qwentts.cpp keeps a complete model+codec context GPU resident. Do not leave the
         // other mode resident when switching. Active work is serialized by the Resone worker.
@@ -408,7 +421,18 @@ public sealed class QwenTtsServiceManager : IAsyncDisposable
     }
 
     private string ResolvePath(string configured)
-        => Path.GetFullPath(Path.IsPathRooted(configured) ? configured : Path.Combine(aiRoot, configured));
+    {
+        if (Path.IsPathRooted(configured)) return Path.GetFullPath(configured);
+
+        // Prefer the manager's explicit AI root. If AI_ROOT was recently changed,
+        // however, keep source-tree/existing-runtime compatibility so a model that
+        // was working before does not suddenly become "missing" merely because the
+        // selected future model location is empty. AiRuntimeRoot.ResolveAsset also
+        // falls back to the Resone application/source root for development installs.
+        string primary = Path.GetFullPath(Path.Combine(aiRoot, configured));
+        if (File.Exists(primary) || Directory.Exists(primary)) return primary;
+        return Path.GetFullPath(Wds.Resone.Api.AiRuntimeRoot.ResolveAsset(configured));
+    }
 
     private static string Rid()
     {
