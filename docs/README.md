@@ -6,7 +6,8 @@ More about it on the itch.io page.
 
 https://www.youtube.com/watch?v=QgrTdx8BhL8
 
-https://img.itch.zone/aW1hZ2UvNTAyOTM1OC8zMDExMjE3NS5wbmc=/original/K8u%2F%2Bf.png
+![Resone](https://img.itch.zone/aW1hZ2UvNTAyOTM1OC8zMDExMjE3NS5wbmc=/original/K8u%2F%2Bf.png)
+
 
 Project documentation is intentionally kept in one flat `docs/` folder.
 
