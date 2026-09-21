@@ -18,6 +18,7 @@ public static class MusicNarrativePlanner
         ILocalChatModelClient model,
         string userRequest,
         string intervalEmotionGuide,
+        string resonatorNotationReference,
         bool useAhd,
         int bars,
         int tempo,
@@ -35,6 +36,8 @@ public static class MusicNarrativePlanner
             throw new ArgumentException("A musical request is required.", nameof(userRequest));
         if (string.IsNullOrWhiteSpace(intervalEmotionGuide))
             throw new InvalidOperationException("The interval emotion field guide is required for narrative planning.");
+        if (string.IsNullOrWhiteSpace(songGenerationContext) && string.IsNullOrWhiteSpace(resonatorNotationReference))
+            throw new InvalidOperationException("The Resonator notation reference is required for non-song director planning.");
         if (bars < 1)
             throw new ArgumentOutOfRangeException(nameof(bars));
         if (tempo < 1)
@@ -47,7 +50,50 @@ public static class MusicNarrativePlanner
             ? "Anchored Harmonic Divergence (AHD) is enabled. Treat chromatic or divergent interval colors as valid expressive material; do not reject an emotional gesture merely because conventional tonal analysis might call it outside the key."
             : "Anchored Harmonic Divergence (AHD) is disabled. The narrative still describes emotional interval gestures, but the later composer will keep them within the requested tonal context.";
 
-        string system = """
+        string system = string.IsNullOrWhiteSpace(songGenerationContext)
+            ? """
+You are Resone's silent musical director. You run before the arrangement composer.
+
+Turn the user's request into a clear compositional plan for the selected lane. For short requests develop something impactual and relevant but be creative.
+
+Use the Interval Emotion Field Guide as your musical vocabulary.
+
+DESIGN PRINCIPLES
+- Build chords and motifs around the impactual notes from intervals used in the piece.
+- Vary key/tonal center across songs.
+- Melody register default: center melodic material around octave 3. Octaves 3-4 should contain most melodic notes. Octave 5 is available for intentional peaks.
+- Anchored Harmonic Divergence is always part of your compositional vocabulary. When AHD is enabled, you can use it to create much richer music.
+- Produce 1-3 response variants across Answers, Contrasts, and Continuations combined.
+- Chord progressions must be actual Resonator chord notation, not chord names. Chords should come from/support the same emotional note palette and may use AHD color when enabled.
+
+OUTPUT CONTRACT — plain text with EXACTLY these top-level labels:
+Composer design:
+Key / tonal plan: ...
+Emotional note palette: ...
+Melody seed:
+`tempo=<TEMPO> <METER> key=<KEY> | ... |`
+Motifs:
+- Motif A — role: `...`
+- Motif B — role: `...`
+Chord progression:
+`tempo=<TEMPO> <METER> key=<KEY> | [..] ... |`
+Response variants (1-3 total):
+- Answer to <seed/motif> — Continuation relationship / intended feeling: `...`
+- Contrast to <seed/motif> — Continuation relationship / intended feeling: `...`
+- Continuation from <seed/motif> — Continuation relationship / intended feeling: `...`
+Usage notes: ...
+
+NOTATION RULES
+- All notation must be in Resonator syntax.
+- Each note for chords must be listed, do not speak of chords by name.
+- Put every reusable musical fragment in backticks.
+- Melody seed should normally be about 2-8 bars: enough to establish identity, not a whole song.
+- Motifs should normally be short 1-2 bar cells.
+- Response examples should be approximately comparable in size to the motif/statement they answer.
+- Chord progression should be long enough to establish the song's harmonic identity, normally 4-8 bars.
+- Use exact pitches, durations, rests, holds, chords, dynamics, and other legal Resonator syntax where musically useful.
+"""
+            : """
 You are Resone's silent musical narrative planner. You do NOT compose notes, chords, MIDI, or Resonator notation. Before the music composer runs, convert the user's request into the actual compositional plan that the later music generator must follow.
 
 Use the Interval Emotion Field Guide as a functional vocabulary, not merely as descriptive inspiration. Use its perspectives exactly when useful: Core / home, Ascending, Descending, Phrase, Continuation, Strong beat, Weak beat, Held, Repeated, Chord, Bass motion, Register, and Resolution tendency.
@@ -67,7 +113,7 @@ STATEMENT / ANSWER / COUNTER PLANNING:
 - An answer should carry the statement farther: design its important notes relative to the source notes at corresponding remembered positions and choose the interval relationship from the field guide's Continuation perspective.
 - A counter uses the same remembered-position + Continuation logic but deliberately contrasts, rejects, interrupts, inverts, or reframes the previous statement rather than simply agreeing with it.
 - Rhythm and delivery are part of the meaning. Do not require literal rhythmic copying. A three-hit repeated statement may receive continuation-related responses with changed spacing, staccato/held treatment, syncopation, acceleration, or a delayed third response.
-- When FULL SONG CONTEXT contains OPEN COMPOSER COMMITMENTS, plan to fulfill any item that applies to the current section/lane and preserve later-lane/later-section obligations rather than treating them as optional history.
+- When CURRENT SONG SECTION SCOPE contains OPEN COMPOSER COMMITMENTS, plan to fulfill any item that applies to the current section/lane and preserve later-lane/later-section obligations rather than treating them as optional history.
 
 A REQUIRED INTERVAL GESTURE IS A REAL COMPOSITIONAL REQUIREMENT. The later composer must actually place that interval relationship in the generated notes in the named perspective. Do not use an emotional adjective as a substitute for the interval. Do not claim that merely moving higher in register satisfies an ascending major 6th, or that a bright chord substitutes for a required major 3rd melodic gesture.
 
@@ -117,8 +163,8 @@ Required-gesture summary: a compact checklist of the interval/perspective gestur
 
         if (!string.IsNullOrWhiteSpace(songGenerationContext))
         {
-            user.AppendLine("FULL SONG CONTEXT")
-                .AppendLine("The following context comes from Resone's deterministic song-generation provisioner. Use it to keep this section consistent with the larger piece. Do not rewrite the global song design; plan the selected lane/chunk so it fulfills the assigned section and preserves exact musical memories when they are called for.")
+            user.AppendLine("CURRENT SONG SECTION SCOPE")
+                .AppendLine("This is the only song section you are planning. Use shared musical DNA and prior memories only as context; do not create phrase/bar plans for any other section.")
                 .AppendLine(songGenerationContext)
                 .AppendLine();
         }
@@ -140,8 +186,14 @@ Required-gesture summary: a compact checklist of the interval/perspective gestur
         }
 
         user.AppendLine("INTERVAL EMOTION FIELD GUIDE")
-            .AppendLine(intervalEmotionGuide)
-            .ToString();
+            .AppendLine(intervalEmotionGuide);
+
+        if (string.IsNullOrWhiteSpace(songGenerationContext))
+        {
+            user.AppendLine()
+                .AppendLine("RESONATOR NOTATION REFERENCE")
+                .AppendLine(resonatorNotationReference);
+        }
 
         var messages = new List<ChatMessage>
         {
@@ -163,11 +215,8 @@ Required-gesture summary: a compact checklist of the interval/perspective gestur
     public static string AppendNarrativePlan(string musicRequest, string narrative)
     {
         return musicRequest
-            + "\n\nMUSICAL NARRATIVE PLAN — FOLLOW THIS PLAN\n"
-            + "This plan was generated silently from the same original user request using the Interval Emotion Field Guide. "
-            + "The original user request remains authoritative if there is a direct conflict, but otherwise this is the compositional plan for the music and must be executed, not treated as optional inspiration. "
-            + "Follow the emotional order, phrase/section placement, phrasing roles, continuation targets, payoff/memory instructions, and every Required interval gesture. "
-            + "A required interval/perspective must occur recognizably in the actual notes in that role; do not substitute a register change, generic mood, chord quality, or unrelated interval for it.\n"
+            + "\n\nMUSICAL NARRATIVE PLAN\n"
+            + "Use the material as suggestions and work to use, but develop material for the request.\n\n"
             + narrative;
     }
 }

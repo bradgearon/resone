@@ -2,7 +2,7 @@
 // until notes change; the numeric timeline is only an editor/playback detail.
 globalThis.LaneNotation = (() => {
     const ppq = 480, names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-    const pitchName = p => names[p % 12] + (Math.floor(p / 12) - 1);
+    const pitchName = p => names[p % 12] + (Math.floor(p / 12) - 2);
     const signature = lane => JSON.stringify(lane.notes || []);
     function serialize(lane, tempo, meter) {
         const events = (lane.notes || []).map(n => ({
@@ -188,9 +188,9 @@ const fresh = () => ({
 let song = fresh(), selected = song.lanes[0].id, presets = [], history = [], undo = [], redo = [],
     pending = null, songRun = null, recording = false, transport = 'stopped', anchor = 0, anchorTime = 0, zoom = 28, verticalZoom = 1,
     drag = null, selectedNote = null, laneHeightPrefs = {}, laneZoomYPrefs = {}, editorBeat = 0, savedVoices = [], previewMelodies = [], workspaceSongs = [], workspaceId = newWorkspaceId(),
-    workspaceTitle = 'Untitled Song', workspaceProducerDesign = '', workspaceComposerOverview = '', workspaceBootstrapped = false, workspaceLoadRequest = '',
+    workspaceTitle = 'Untitled Song', workspaceProducerDesign = '', workspaceComposerOverview = '', workspaceDirectorOutput = '', workspaceBootstrapped = false, workspaceLoadRequest = '',
     workspaceView = 'history', workspaceSaveTimer = 0, workspaceHistoryVersion = 0, workspaceHistorySavedVersion = 0,
-    workspaceProducerVersion = 0, workspaceProducerSavedVersion = 0, workspaceComposerVersion = 0, workspaceComposerSavedVersion = 0, workspaceSaveRequests = new Map(), voicePreview = null, voiceAudio = null;
+    workspaceProducerVersion = 0, workspaceProducerSavedVersion = 0, workspaceComposerVersion = 0, workspaceComposerSavedVersion = 0, workspaceDirectorVersion = 0, workspaceDirectorSavedVersion = 0, workspaceSaveRequests = new Map(), voicePreview = null, voiceAudio = null;
 const DEFAULT_VOICE_SAMPLE_TEXT = "Thank you for using Resone by We Develop Software, I can't wait to hear what you create.";
 const VOCAL_SOURCE_OOHS = '__oohs__', VOCAL_SOURCE_NEW = '__new_voice__', VOCAL_OOHS_PROGRAM = 53;
 function savedVoice(id) { return savedVoices.find(v => v.id === id); }
@@ -220,7 +220,7 @@ const clone = x => JSON.parse(JSON.stringify(x)),
       lane = () => song.lanes.find(l => l.id === selected) || song.lanes[0];
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const DEFAULT_LANE_HEIGHT = 92, MIN_LANE_HEIGHT = 70, MAX_LANE_HEIGHT = 260, MIN_VERTICAL_ZOOM = .55, MAX_VERTICAL_ZOOM = 6;
-function noteName(pitch) { return NOTE_NAMES[((pitch % 12) + 12) % 12] + (Math.floor(pitch / 12) - 1); }
+function noteName(pitch) { return NOTE_NAMES[((pitch % 12) + 12) % 12] + (Math.floor(pitch / 12) - 2); }
 function notationKey(notation) {
     const m=String(notation||'').match(/(?:^|\s)key=([A-Ga-g](?:#|b)?(?:maj|min|m)?)(?=\s|\||$)/i);
     return m ? m[1].replace(/^([a-g])/i,x=>x.toUpperCase()).replace(/min$/i,'m').replace(/maj$/i,'') : '';
@@ -295,6 +295,10 @@ function normalizedWorkspaceTitle(value) {
     const t = String(value || '').replace(/\s+/g, ' ').trim();
     return (t || 'Untitled Song').slice(0, 120);
 }
+function normalizedLaneName(value, fallback='Lane') {
+    const t = String(value || '').replace(/\s+/g, ' ').trim();
+    return (t || fallback || 'Lane').slice(0, 64);
+}
 function isGenericWorkspaceTitle(value) {
     const t=String(value||'').replace(/\s+/g,' ').trim().toLowerCase();
     return !t || t==='untitled' || t==='untitled song' || t==='new song' || t==='song' || t==='new composition';
@@ -325,7 +329,7 @@ function saveWorkspace(force=false) {
     if (!force && !song.started && !history.length && workspaceTitle === 'Untitled Song') return;
     clearTimeout(workspaceSaveTimer);
     const payload={id:workspaceId,title:workspaceTitle,project:song};
-    const ack={historyVersion:null,producerVersion:null,composerVersion:null};
+    const ack={historyVersion:null,producerVersion:null,composerVersion:null,directorVersion:null};
     if (workspaceHistoryVersion !== workspaceHistorySavedVersion) {
         payload.history=workspaceHistoryPayload(); ack.historyVersion=workspaceHistoryVersion;
     }
@@ -334,6 +338,9 @@ function saveWorkspace(force=false) {
     }
     if (workspaceComposerVersion !== workspaceComposerSavedVersion) {
         payload.composerDesign=workspaceComposerOverview; ack.composerVersion=workspaceComposerVersion;
+    }
+    if (workspaceDirectorVersion !== workspaceDirectorSavedVersion) {
+        payload.directorOutput=workspaceDirectorOutput; ack.directorVersion=workspaceDirectorVersion;
     }
     const id=crypto.randomUUID(); workspaceSaveRequests.set(id,ack); send('workspaceSave',payload,id);
 }
@@ -345,13 +352,22 @@ function scheduleWorkspaceSave() {
 function renderSongNotes() {
     const producer = String(workspaceProducerDesign || '').trim();
     const composer = String(workspaceComposerOverview || '').trim();
+    const director = String(workspaceDirectorOutput || '').trim();
+    const producerCard=$('producerNotesCard'), notesGrid=$('songNotesPanel')?.querySelector('.songNotesGrid');
+    if (producerCard) producerCard.hidden=!producer;
+    if (notesGrid) notesGrid.classList.toggle('singleNote',!producer);
     if ($('producerNotesText')) $('producerNotesText').textContent = producer || 'No producer notes yet. Song mode creates these when the Producer plans the piece.';
-    if ($('composerNotesText')) $('composerNotesText').textContent = composer || 'No composer notes yet. The Composer design pass creates these when it is enabled for Song mode.';
+    const notes=[];
+    if (composer) notes.push(composer);
+    if (director) notes.push(director);
+    if ($('composerNotesTitle')) $('composerNotesTitle').textContent = composer && director ? 'Composer + Director notes' : director ? 'Director notes' : 'Composer notes';
+    if ($('composerNotesText')) $('composerNotesText').textContent = notes.length ? notes.join('\n\n──────── Director ────────\n\n') : 'No composer or director notes yet.';
     if ($('songNotesMeta')) {
-        if (producer && composer) $('songNotesMeta').textContent = 'Producer + composer context';
-        else if (producer) $('songNotesMeta').textContent = 'Producer context only';
-        else if (composer) $('songNotesMeta').textContent = 'Composer context only';
-        else $('songNotesMeta').textContent = 'No generated notes for this piece';
+        const contexts=[];
+        if (producer) contexts.push('Producer');
+        if (composer) contexts.push('Composer');
+        if (director) contexts.push('Director');
+        $('songNotesMeta').textContent = contexts.length ? contexts.join(' + ') + ' context' : 'No generated notes for this piece';
     }
 }
 function setSongNotesOpen(open) {
@@ -361,7 +377,7 @@ function setSongNotesOpen(open) {
     panel.hidden=!visible;
     toggle.classList.toggle('active',visible);
     toggle.setAttribute('aria-expanded',String(visible));
-    toggle.title=visible?'Hide producer and composer notes':'Show producer and composer notes';
+    toggle.title=visible?'Hide piece notes':'Show piece notes';
     toggle.setAttribute('aria-label',toggle.title);
     if (visible) renderSongNotes();
 }
@@ -402,8 +418,8 @@ function loadWorkspaceSong(id) {
 function createNewWorkspaceSong(forceSave=false) {
     if (forceSave) saveWorkspace(true);
     send('stop'); song=fresh(); selected=song.lanes[0].id; selectedNote=null; editorBeat=0; anchor=0; history=[]; undo=[]; redo=[]; songRun=null;
-    workspaceId=newWorkspaceId(); workspaceTitle='Untitled Song'; workspaceProducerDesign=''; workspaceComposerOverview='';
-    workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceComposerVersion=workspaceComposerSavedVersion=0; workspaceSaveRequests.clear();
+    workspaceId=newWorkspaceId(); workspaceTitle='Untitled Song'; workspaceProducerDesign=''; workspaceComposerOverview=''; workspaceDirectorOutput='';
+    workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceComposerVersion=workspaceComposerSavedVersion=0; workspaceDirectorVersion=workspaceDirectorSavedVersion=0; workspaceSaveRequests.clear();
     $('brief').value=''; updateSongIdentity(); renderHistory(); renderSongList(); commit();
     status('New song. Describe your first idea.');
 }
@@ -522,7 +538,7 @@ function requestMusic(text) {
         if (!previous.lanes.some(l => l.id === selected)) throw Error('Select a lane to generate.');
         const requestProject = clone(previous);
         // Send all current lanes as context; only selected is a generation target.
-        pending = {id, kind : 'compose', brief : text, laneId : selected, previous, includedIds};
+        pending = {id, kind : 'compose', brief : text, laneId : selected, previous};
         send('stop');
         transport = 'stopped';
         anchor = 0;
@@ -671,7 +687,7 @@ function stopSongGeneration(message) {
 function applySongChunk(payload) {
     if (!songRun || pending?.kind !== 'songChunk') throw Error('Song generation state was lost.');
     const tracks = Array.isArray(payload.tracks) ? payload.tracks : [];
-    const t = tracks.find(x => x?.laneId === pending.laneId) || (tracks.length === 1 ? tracks[0] : null);
+    const t = tracks.length === 1 ? tracks[0] : null;
     const target = song.lanes.find(l => l.id === pending.laneId);
     if (!target) throw Error('Song lane disappeared during generation.');
     const start = pending.startBeat, end = pending.endBeat, length = pending.sectionLength;
@@ -705,6 +721,7 @@ function applySongChunk(payload) {
     songRun.completedChunks = (songRun.completedChunks || 0) + 1;
     songRun.laneIndex = pending.laneIndex + 1;
     if (Array.isArray(payload.warnings) && payload.warnings.length) songRun.recoveryWarnings.push(...payload.warnings.map(String));
+    if (payload.directorOutput !== undefined && payload.directorOutput !== workspaceDirectorOutput) { workspaceDirectorOutput=payload.directorOutput || ''; workspaceDirectorVersion++; }
     pending = null;
     commit();
     nextSongChunk();
@@ -1047,7 +1064,43 @@ function render() {
         icon.className = 'glyph';
         icon.textContent = l.vocals ? '♬' : glyphs[i % glyphs.length];
         const name = document.createElement('div');
-        name.textContent = l.name;
+        const nameLabel = document.createElement('span');
+        nameLabel.className = 'laneNameLabel';
+        nameLabel.textContent = l.name;
+        nameLabel.title = 'Click to rename lane';
+        nameLabel.onclick = e => {
+            e.stopPropagation();
+            if (pending || nameLabel.contentEditable === 'true') return;
+            nameLabel.dataset.originalName = l.name;
+            nameLabel.contentEditable = 'true';
+            nameLabel.focus();
+            const selection = window.getSelection();
+            if (selection) { const range=document.createRange(); range.selectNodeContents(nameLabel); selection.removeAllRanges(); selection.addRange(range); }
+        };
+        nameLabel.onkeydown = e => {
+            if (e.key === 'Enter') { e.preventDefault(); nameLabel.blur(); }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                nameLabel.textContent = nameLabel.dataset.originalName || l.name;
+                nameLabel.dataset.cancelRename = '1';
+                nameLabel.blur();
+            }
+        };
+        nameLabel.onblur = () => {
+            if (nameLabel.contentEditable !== 'true') return;
+            nameLabel.contentEditable = 'false';
+            if (nameLabel.dataset.cancelRename === '1') { delete nameLabel.dataset.cancelRename; render(); return; }
+            const next = normalizedLaneName(nameLabel.textContent, l.name);
+            if (next !== l.name) {
+                checkpoint();
+                const oldName=l.name; l.name=next;
+                if (Object.prototype.hasOwnProperty.call(laneHeightPrefs, oldName) && !Object.prototype.hasOwnProperty.call(laneHeightPrefs, next)) {
+                    laneHeightPrefs[next]=laneHeightPrefs[oldName]; delete laneHeightPrefs[oldName]; saveEditorPreferences();
+                }
+                commit();
+            } else render();
+        };
+        name.append(nameLabel);
         const sub = document.createElement('small');
         sub.textContent = instrumentName(l);
         name.append(sub);
@@ -1443,8 +1496,8 @@ function receive(j) {
         history=Array.isArray(p.history)?p.history:[];
         workspaceId=p.id || newWorkspaceId();
         workspaceTitle=normalizedWorkspaceTitle(p.title);
-        workspaceProducerDesign=p.producerDesign || ''; workspaceComposerOverview=p.composerDesign || '';
-        workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceComposerVersion=workspaceComposerSavedVersion=0; workspaceSaveRequests.clear();
+        workspaceProducerDesign=p.producerDesign || ''; workspaceComposerOverview=p.composerDesign || ''; workspaceDirectorOutput=p.directorOutput || '';
+        workspaceHistoryVersion=workspaceHistorySavedVersion=0; workspaceProducerVersion=workspaceProducerSavedVersion=0; workspaceComposerVersion=workspaceComposerSavedVersion=0; workspaceDirectorVersion=workspaceDirectorSavedVersion=0; workspaceSaveRequests.clear();
         workspaceBootstrapped=true; undo=[]; redo=[]; songRun=null; pending=null;
         selected=song.lanes[0]?.id || selected; selectedNote=null; editorBeat=0; anchor=0; transport='stopped';
         $('brief').value=history.at(-1)?.brief || '';
@@ -1462,6 +1515,7 @@ function receive(j) {
         if (ack?.historyVersion != null) workspaceHistorySavedVersion=Math.max(workspaceHistorySavedVersion,ack.historyVersion);
         if (ack?.producerVersion != null) workspaceProducerSavedVersion=Math.max(workspaceProducerSavedVersion,ack.producerVersion);
         if (ack?.composerVersion != null) workspaceComposerSavedVersion=Math.max(workspaceComposerSavedVersion,ack.composerVersion);
+        if (ack?.directorVersion != null) workspaceDirectorSavedVersion=Math.max(workspaceDirectorSavedVersion,ack.directorVersion);
         if (p.id === workspaceId) workspaceTitle=normalizedWorkspaceTitle(p.title || workspaceTitle);
         setWorkspaceSongs(p.songs); updateSongIdentity();
         break;
@@ -1512,6 +1566,7 @@ function receive(j) {
                 restoreSongGeneration(); pending = null; busy(); status('Producer did not return a usable section list.'); break;
             }
             songRun.state = p.state; songRun.design = p.design || '';
+            song.bars = Math.max(1, Number(songRun.state.targetBars || song.bars));
             if (typeof workspaceProducerDesign !== 'undefined' && p.design && p.design !== workspaceProducerDesign) { workspaceProducerDesign=p.design; workspaceProducerVersion++; }
             if (typeof workspaceComposerOverview !== 'undefined' && p.composerDesign !== undefined && p.composerDesign !== workspaceComposerOverview) { workspaceComposerOverview=p.composerDesign || ''; workspaceComposerVersion++; }
             if (typeof workspaceTitle !== 'undefined') {
@@ -1532,15 +1587,15 @@ function receive(j) {
         break;
     case 'composition':
         if (matching) {
-            const {brief, laneId, previous, includedIds} = pending;
+            const {brief, laneId, previous} = pending;
             const tracks = p.tracks;
-            const ids = new Set();
-            if (!Array.isArray(tracks) || tracks.length === 0 || tracks.some(t =>
-                !includedIds.includes(t.laneId) || !song.lanes.some(l => l.id === t.laneId) || ids.has(t.laneId) ||
-                !ids.add(t.laneId) || !Array.isArray(t.notes) || !t.notes.length ||
+            const target = song.lanes.find(l => l.id === laneId);
+            const before = previous.lanes.find(l => l.id === laneId);
+            const t = Array.isArray(tracks) && tracks.length === 1 ? tracks[0] : null;
+            if (!target || !before || !t || !Array.isArray(t.notes) || !t.notes.length ||
                 t.notes.some(n => !Number.isFinite(n.start) || n.start < 0 ||
                     !Number.isFinite(n.duration) || n.duration <= 0 ||
-                    !Number.isInteger(n.pitch) || n.pitch < 0 || n.pitch > 127))) {
+                    !Number.isInteger(n.pitch) || n.pitch < 0 || n.pitch > 127)) {
                 restorePendingComposition();
                 pending = null;
                 busy();
@@ -1550,22 +1605,19 @@ function receive(j) {
             undo.push(previous);
             if (undo.length > 40) undo.shift();
             redo = [];
-            for (const t of tracks) {
-                const l = song.lanes.find(l => l.id === t.laneId);
-                const before = previous.lanes.find(x => x.id === t.laneId);
-                const generatedLength = Math.max(0, ...t.notes.map(n => n.start + n.duration));
-                Object.assign(l, {notation : t.notation, originalBrief : t.originalBrief || before.originalBrief || brief,
-                    prompts : [...(before.prompts || []), brief], notes : clone(t.notes), clipLengthBeats : generatedLength});
-                if (typeof rememberNotationKey === 'function') rememberNotationKey(l,t.notation);
-                if (l.vocals) { l.renderedVocalPath=''; l.renderedVocalSignature=''; }
-            }
-            for (const t of tracks) LaneNotation.accept(song.lanes.find(l => l.id === t.laneId));
+            const generatedLength = Math.max(0, ...t.notes.map(n => n.start + n.duration));
+            Object.assign(target, {notation : t.notation, originalBrief : t.originalBrief || before.originalBrief || brief,
+                prompts : [...(before.prompts || []), brief], notes : clone(t.notes), clipLengthBeats : generatedLength});
+            if (typeof rememberNotationKey === 'function') rememberNotationKey(target,t.notation);
+            if (target.vocals) { target.renderedVocalPath=''; target.renderedVocalSignature=''; }
+            LaneNotation.accept(target);
             song.started = true;
             selected = laneId;
             history.push({brief, song : clone(song), laneId : selected, createdUtc:new Date().toISOString()});
             if (history.length > 40)
                 history.shift();
             if (typeof workspaceHistoryVersion !== 'undefined') workspaceHistoryVersion++;
+            if (p.directorOutput !== undefined && p.directorOutput !== workspaceDirectorOutput) { workspaceDirectorOutput=p.directorOutput || ''; workspaceDirectorVersion++; }
             pending = null;
             commit();
             renderHistory();
@@ -1733,7 +1785,7 @@ $('renderVocals').onclick = () => {
 function midiVoiceNoteName(note) {
     if (!Number.isFinite(note) || note < 0 || note > 127) return '?';
     const names=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-    return names[note%12] + (Math.floor(note/12)-1);
+    return names[note%12] + (Math.floor(note/12)-2);
 }
 
 function bytesToBase64(bytes) {

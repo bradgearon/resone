@@ -15,7 +15,7 @@ public static partial class Pitch
         ['A'] = 9,
         ['B'] = 11
     };
-    public static int ToMidi(string text, int defaultOctave = 4, int midiNoteForC0 = 12)
+    public static int ToMidi(string text, int defaultOctave = 3, int midiNoteForC0 = 24)
     {
         var match = PitchRegex().Match(text.Trim());
         if (!match.Success)

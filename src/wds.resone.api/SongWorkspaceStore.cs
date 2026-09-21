@@ -25,6 +25,7 @@ public sealed class SongWorkspaceMeta
     public string Title { get; set; } = "Untitled Song";
     public string ProducerDesign { get; set; } = "";
     public string ComposerDesign { get; set; } = "";
+    public string DirectorOutput { get; set; } = "";
     public DateTimeOffset CreatedUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedUtc { get; set; } = DateTimeOffset.UtcNow;
 }
@@ -98,6 +99,7 @@ public sealed class SongWorkspaceStore
                 ["title"] = meta.Title,
                 ["producerDesign"] = meta.ProducerDesign,
                 ["composerDesign"] = meta.ComposerDesign,
+                ["directorOutput"] = meta.DirectorOutput,
                 ["project"] = JsonSerializer.SerializeToNode(project, ResoneJson.Default.SongProject),
                 ["history"] = JsonSerializer.SerializeToNode(history, ResoneJson.Default.ListSongWorkspaceHistoryEntry),
                 ["songs"] = new JsonArray(index.Songs.OrderByDescending(x => x.UpdatedUtc).Select(ToSummaryNode).ToArray())
@@ -114,6 +116,7 @@ public sealed class SongWorkspaceStore
         string title = NormalizeTitle(payload.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "");
         string? producerDesign = payload.TryGetProperty("producerDesign", out var pd) ? pd.GetString() ?? "" : null;
         string? composerDesign = payload.TryGetProperty("composerDesign", out var cd) ? cd.GetString() ?? "" : null;
+        string? directorOutput = payload.TryGetProperty("directorOutput", out var d) ? d.GetString() ?? "" : null;
         var project = payload.GetProperty("project").Deserialize(ResoneJson.Default.SongProject) ?? throw new ArgumentException("Missing workspace project.");
         List<SongWorkspaceHistoryEntry>? history = null;
         if (payload.TryGetProperty("history", out var h) && h.ValueKind == JsonValueKind.Array)
@@ -153,6 +156,8 @@ public sealed class SongWorkspaceStore
                 meta.ProducerDesign = producerDesign;
             if (composerDesign is not null)
                 meta.ComposerDesign = composerDesign;
+            if (directorOutput is not null)
+                meta.DirectorOutput = directorOutput;
             meta.UpdatedUtc = now;
 
             var writes = new List<Task>

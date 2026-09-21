@@ -96,7 +96,7 @@ internal sealed class AppUpdateService(string installRoot, HttpClient http, Tray
         if (!string.IsNullOrWhiteSpace(policy.Directory))
         {
             string path = Environment.ExpandEnvironmentVariables(policy.Directory.Trim());
-            if (!Path.IsPathRooted(path)) path = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Wds", path));
+            if (!Path.IsPathRooted(path)) path = Path.GetFullPath(Path.Combine(installRoot, path));
             ResoneDailyLog.Configure(path);
         }
     }

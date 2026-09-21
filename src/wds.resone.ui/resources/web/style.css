@@ -87,8 +87,9 @@ body.midiDropActive::after{content:'Drop MIDI to import into the selected lane';
 .songNotesHeader{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:0 2px 9px;border-bottom:1px solid var(--line);flex:0 0 auto}
 .songNotesHeader strong{font-size:12px;font-weight:600;color:#d9ebf8}
 .songNotesHeader small{font-size:9px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.songNotesGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;min-height:0;flex:1;padding-top:10px}
-.songNoteCard{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid #2d4352;border-radius:7px;background:#101d27b8;overflow:hidden}
+.songNotesGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;min-height:0;flex:1;padding-top:10px}.songNotesGrid.singleNote{grid-template-columns:minmax(0,1fr)}
+.songNoteCard{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid #2d4352;border-radius:7px;background:#101d27b8;overflow:hidden}.songNoteCard[hidden]{display:none}
 .songNoteCard h3{margin:0;padding:7px 9px;border-bottom:1px solid #263b49;font-size:10px;font-weight:600;letter-spacing:.25px;color:#9ccdf4;text-transform:uppercase}
 .songNoteCard pre{margin:0;padding:9px 10px;min-height:0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;font:10px/1.5 'Segoe UI',sans-serif;color:#c8d7e2}
 @media(max-width:1050px){.songNotesPanel{top:72px}.songNotesGrid{grid-template-columns:1fr}.songNoteCard pre{max-height:130px}}
+.laneNameLabel{cursor:text}.laneNameLabel[contenteditable="true"]{outline:1px solid var(--blue);outline-offset:2px;border-radius:3px;user-select:text}

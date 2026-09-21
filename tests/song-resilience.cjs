@@ -37,13 +37,13 @@ assert(songRun.recoveryWarnings.some(x=>/preserved and generation continued/.tes
 // An explicit empty track is also accepted and advances, preserving preexisting notes.
 song.lanes[1].notes=[{pitch:40,start:0,duration:1}];
 id=pending.id;
-receive({op:'songChunk',requestId:id,payload:{tracks:[{laneId:'b',notation:'',notes:[]}],warnings:['No playable MIDI could be recovered for Bass; preserved the section as existing music/silence and continued.'],songState:state}});
+receive({op:'songChunk',requestId:id,payload:{tracks:[{notation:'',notes:[]}],warnings:['No playable MIDI could be recovered for Bass; preserved the section as existing music/silence and continued.'],songState:state}});
 assert(song.lanes[1].notes.some(n=>n.pitch===40),'empty composer result erased existing section music');
 assert(songRun&&pending&&pending.sectionId==='battle'&&pending.laneId==='a','empty track did not continue through plan');
 
 // A partially recovered payload keeps every valid note and advances normally.
 id=pending.id;
-receive({op:'songChunk',requestId:id,payload:{tracks:[{laneId:'a',notation:'C4 BAD D4',notes:[{pitch:60,start:0,duration:1},{pitch:62,start:2,duration:1}]}],warnings:['Recovered Melody: Skipped invalid event BAD'],songState:state}});
+receive({op:'songChunk',requestId:id,payload:{tracks:[{notation:'C4 BAD D4',notes:[{pitch:60,start:0,duration:1},{pitch:62,start:2,duration:1}]}],warnings:['Recovered Melody: Skipped invalid event BAD'],songState:state}});
 assert(song.lanes[0].notes.some(n=>n.pitch===60)&&song.lanes[0].notes.some(n=>n.pitch===62),'best-effort notes were not kept');
 assert(songRun&&pending&&pending.sectionId==='battle'&&pending.laneId==='b','recovered chunk did not advance exactly once');
 console.log('PASS song chunks salvage/continue without retrying or aborting');

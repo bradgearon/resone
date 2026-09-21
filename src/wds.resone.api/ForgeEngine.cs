@@ -50,13 +50,15 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
         var selectedGenre = GenreBriefResolver.Resolve(assetsRoot, identity, description);
         if (!selectedGenre.HasMatch) selectedGenre = producerGenre;
         string composerDesign = existingComposerOverview;
+        var state = SongGenerationProvisioner.Create(description, design, tempo, meter, targetBars, composerDesign, selectedGenre);
+        int actualBars = state.TargetBars;
         if (composerDesignPass)
         {
             if (progress is not null) await progress("Song · Composer design pass · motifs, harmony, and responses…").ConfigureAwait(false);
             composerDesign = await SongComposerDesignPass.CreateAsync(
-                client, assetsRoot, description, design, tempo, meter, targetBars, useAhd, existingComposerOverview, selectedGenre.PromptContext, token).ConfigureAwait(false);
+                client, assetsRoot, description, design, tempo, meter, actualBars, useAhd, existingComposerOverview, selectedGenre.PromptContext, token).ConfigureAwait(false);
+            state.ComposerDesign = composerDesign.Trim();
         }
-        var state = SongGenerationProvisioner.Create(description, design, tempo, meter, targetBars, composerDesign, selectedGenre);
         return new JsonObject
         {
             ["design"] = design,
@@ -80,6 +82,7 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
             throw new ArgumentException("Describe this song section/lane in 1–12000 characters.");
         bool useAhd = !payload.TryGetProperty("useAhd", out var ahd) || ahd.GetBoolean();
         string packet = SongGenerationProvisioner.BuildPacket(state, sectionId, lane.Name, lane.Drums);
+        string directorPacket = SongGenerationProvisioner.BuildDirectorPacket(state, sectionId, lane.Name, lane.Drums);
         int sectionIndex = Math.Max(0, state.Sections.FindIndex(s => string.Equals(s.Id, sectionId, StringComparison.OrdinalIgnoreCase)));
         Func<string, Task>? songProgress = progress is null ? null : message =>
         {
@@ -90,7 +93,7 @@ public sealed class ForgeEngine(ResoneSettings settings, string assetsRoot, Http
             return progress($"Song · Section {sectionIndex + 1}/{Math.Max(1, state.Sections.Count)} · {lane.Name} · {stage}");
         };
         var result = await new ArrangementComposer(http, settings, assetsRoot).ComposeSongChunkAsync(
-            project, laneId, description, useAhd, new SongGenerationContext(sectionId, packet), token, songProgress).ConfigureAwait(false);
+            project, laneId, description, useAhd, new SongGenerationContext(sectionId, packet, directorPacket), token, songProgress).ConfigureAwait(false);
         string memory = result["songMemoryNotes"]?.GetValue<string>() ?? "";
         SongGenerationProvisioner.ApplyChunkNotes(state, sectionId, lane.Name, memory);
         result["songState"] = JsonSerializer.SerializeToNode(state, ResoneJson.Default.SongGenerationState);

@@ -35,11 +35,6 @@ public sealed class ArrangementComposer(HttpClient http, ResoneSettings settings
         // The request supplies the actual drum map only when composing percussion.
         var references = Regex.Replace(instructions.References,
             @"(?ms)^## Percussion\s.*?(?=^## |\z)", "");
-        // The silent narrative planner already consumed the interval-emotion field guide and
-        // turned it into concrete interval/perspective requirements. Do not make the composer
-        // re-plan the emotions from the full guide; it only needs AHD + executable notation refs.
-        references = Regex.Replace(references,
-            @"(?ms)\nREFERENCE: interval_emotion_field_guide\.md\s.*?(?=\nREFERENCE:|\z)", "\n");
         string prompt = instructions.SystemPrompt + "\n" + references + "\n" + compositionTips
             + "\n" + instructions.ArrangementInstructions;
         if (target.Drums)
@@ -53,6 +48,7 @@ public sealed class ArrangementComposer(HttpClient http, ResoneSettings settings
             prompt += "\nSelected lane is a VOCAL MELODY. Generate monophonic, singable pitched Resonator notation only; do not emit lyrics, words, phonemes, or mode=drums. The lyrics/text and voice are rendered separately after the MIDI exists. Keep phrases human-singable, leave breathing space, avoid impossible overlapping vocal notes, and use rhythm/duration as intentional syllable and vowel timing.";
         else
             prompt += "\nSelected lane is pitched. Do not emit mode=drums.";
+        prompt += "\nSelected lane name: " + target.Name + ". Compose specifically for this named lane/instrument role.";
 
         if (!string.IsNullOrWhiteSpace(composerOverview))
         {
@@ -69,7 +65,7 @@ This piece was created from the composer overview supplied below. The user's new
 
 FULL SONG SECTION MODE — ONLY ACTIVE FOR THIS REQUEST.
 You are rendering one lane for one producer-planned section of a larger song. The producer ran once before section generation began and does not participate in individual chunks. Follow the supplied FULL SONG GENERATION CONTEXT and CURRENT SECTION.
-Return the selected track first using the normal Resonator contract. AFTER the complete notation, emit a line containing exactly:
+Return the selected lane's Resonator notation first. AFTER the complete notation, emit a line containing exactly:
 SONG MEMORY NOTES
 Then emit concise plain text with exactly these labels:
 Melody notes: important line-shape, statement/answer/counter relationships, remembered-note positions, register, or melodic facts worth carrying forward. Put exact reusable Resonator fragments in backticks when useful. If this lane establishes no melodic fact, leave this line brief.
@@ -88,23 +84,6 @@ HANDOFF DISCIPLINE: Read OPEN COMPOSER COMMITMENTS in the supplied full-song con
             double clipLength = l.ClipLengthBeats > 0 && double.IsFinite(l.ClipLengthBeats) ? l.ClipLengthBeats : 0;
             return Math.Max(noteLength, clipLength);
         }
-        JsonObject LaneContext(Lane l) => new() {
-            ["laneId"]=l.Id, ["name"]=l.Name, ["bank"]=l.Bank,
-            ["program"]=l.Program, ["drums"]=l.Drums, ["vocals"]=l.Vocals,
-            ["existingNotation"]=l.Notation,
-            ["existingLengthBeats"]=LaneLength(l),
-            ["noteCount"]=l.Notes.Count,
-            ["importedMidiName"]=l.ImportedMidiName,
-            ["originalBrief"]=l.OriginalBrief,
-            ["prompts"]=new JsonArray(l.Prompts.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()) };
-        var context = new JsonArray();
-        foreach (var l in project.Lanes.Where(l => l.Id != laneId && (l.Notes.Count > 0 || !string.IsNullOrWhiteSpace(l.Notation))))
-            context.Add((JsonNode)LaneContext(l));
-        var meter = project.Meter.Split('/');
-        var request = new JsonObject { ["description"]=description, ["tempo"]=project.Tempo,
-            ["meter"]=project.Meter, ["bars"]=project.Bars,
-            ["requestedBeats"]=project.Bars * int.Parse(meter[0]) * 4.0 / int.Parse(meter[1]),
-            ["useAhd"]=useAhd, ["selectedLane"]=LaneContext(target), ["contextLanes"]=context };
         // The decoder can only return the selected lane; context is never a write target.
         var targetProject = new SongProject { Tempo=project.Tempo, Meter=project.Meter, Bars=project.Bars, Lanes=[target] };
         ILocalChatModelClient client = settings.LocalInferenceEnabled ? new NativeChatClient(settings) : new LocalAiClient(http,settings);
@@ -137,11 +116,42 @@ HANDOFF DISCIPLINE: Read OPEN COMPOSER COMMITMENTS in the supplied full-song con
         }
 
         string intervalGuide = InstructionContent.Read(assetsRoot, "interval_emotion_field_guide.md");
+        string resonatorNotationReference = songContext is null
+            ? InstructionContent.Read(assetsRoot, "resonator_api_v0.1.md")
+            : "";
         if (progress is not null) await progress(songContext is null ? "Composing · Directing…" : "Song · Directing section…").ConfigureAwait(false);
         string narrative = await MusicNarrativePlanner.CreateAsync(
-            client, description, intervalGuide, useAhd, project.Bars, project.Tempo, project.Meter,
-            target.Notation, target.OriginalBrief, target.Prompts, LaneLength(target), songContext?.Packet ?? "", composerOverview, laneGenreContext, token).ConfigureAwait(false);
-        string composerRequest = MusicNarrativePlanner.AppendNarrativePlan(request.ToJsonString(), narrative);
+            client, description, intervalGuide, resonatorNotationReference, useAhd, project.Bars, project.Tempo, project.Meter,
+            target.Notation, target.OriginalBrief, target.Prompts, LaneLength(target), songContext?.DirectorPacket ?? "", composerOverview, laneGenreContext, token).ConfigureAwait(false);
+        string requestText = $"""
+{description.Trim()}
+Tempo: {project.Tempo}
+Meter: {project.Meter}
+Bars: {project.Bars}
+UseAhd: {useAhd.ToString().ToLowerInvariant()}
+Instrument: {target.Name}
+""";
+
+        if (!string.IsNullOrWhiteSpace(target.Notation))
+        {
+            requestText += "\nCURRENT SELECTED LANE MATERIAL\nExisting Resonator notation:\n" + target.Notation.Trim();
+        }
+
+        var readableContext = project.Lanes
+            .Where(l => l.Id != laneId && (l.Notes.Count > 0 || !string.IsNullOrWhiteSpace(l.Notation)))
+            .ToList();
+        if (readableContext.Count != 0)
+        {
+            requestText += "\n\nCONTEXT LANES — READ ONLY";
+            foreach (var lane in readableContext)
+            {
+                requestText += "\nInstrument: " + lane.Name;
+                if (!string.IsNullOrWhiteSpace(lane.Notation))
+                    requestText += "\nNotation:\n" + lane.Notation.Trim();
+            }
+        }
+
+        string composerRequest = MusicNarrativePlanner.AppendNarrativePlan(requestText, narrative);
         if (songContext is not null)
             composerRequest += "\n\n" + songContext.Packet;
         if (!string.IsNullOrWhiteSpace(composerOverview))
@@ -167,6 +177,7 @@ HANDOFF DISCIPLINE: Read OPEN COMPOSER COMMITMENTS in the supplied full-song con
         try
         {
             var result = Decode(notationText,targetProject,description, allowEmptyTracks: songContext is not null);
+            result["directorOutput"] = narrative;
             if (songContext is not null)
             {
                 result["songMemoryNotes"] = memoryNotes;
@@ -183,7 +194,8 @@ HANDOFF DISCIPLINE: Read OPEN COMPOSER COMMITMENTS in the supplied full-song con
 
     public static JsonObject Decode(string text, SongProject project, string description, bool allowEmptyTracks = false)
     {
-        var headers = Regex.Matches(text, @"(?m)^[ \t]*track=(?<id>[^\s|]+)[ \t]*");
+        if (project.Lanes.Count != 1)
+            throw new ArgumentException("Arrangement decoding requires exactly one selected lane.");
         var seen=new HashSet<string>();
         var output=new JsonArray();
         var warnings=new JsonArray();
@@ -204,7 +216,7 @@ HANDOFF DISCIPLINE: Read OPEN COMPOSER COMMITMENTS in the supplied full-song con
                 throw new ArgumentException("No playable notes remained for "+lane.Name);
             seen.Add(lane.Id);
             length=Math.Max(length,c.LengthTicks/(double)c.Ppq);
-            output.Add((JsonNode)new JsonObject { ["laneId"]=lane.Id,["notation"]=notation,
+            output.Add((JsonNode)new JsonObject { ["notation"]=notation,
                 ["originalBrief"]=string.IsNullOrEmpty(lane.OriginalBrief)?description:lane.OriginalBrief,
                 ["notes"]=JsonSerializer.SerializeToNode(notes,ResoneJson.Default.ListNote) });
         }
@@ -251,14 +263,16 @@ HANDOFF DISCIPLINE: Read OPEN COMPOSER COMMITMENTS in the supplied full-song con
 
             warnings.Add((JsonNode?)JsonValue.Create("Primary " + lane.Name + " notation could not be used: " + primaryError));
             string fallback=ExtractPlayableFallback(rawNotation);
-            if (!string.IsNullOrWhiteSpace(fallback) && TryDecodeNotation(lane,fallback,out var fallbackError))
-            {
-                warnings.Add((JsonNode?)JsonValue.Create("Recovered " + lane.Name + " from explicit playable note/chord tokens in malformed composer output."));
-                return;
-            }
-
             if (!string.IsNullOrWhiteSpace(fallback))
+            {
+                if (TryDecodeNotation(lane,fallback,out var fallbackError))
+                {
+                    warnings.Add((JsonNode?)JsonValue.Create("Recovered " + lane.Name + " from explicit playable note/chord tokens in malformed composer output."));
+                    return;
+                }
+
                 warnings.Add((JsonNode?)JsonValue.Create("Fallback " + lane.Name + " notation still contained no playable MIDI: " + fallbackError));
+            }
 
             if (allowEmptyTracks)
             {
@@ -269,7 +283,6 @@ HANDOFF DISCIPLINE: Read OPEN COMPOSER COMMITMENTS in the supplied full-song con
                 seen.Add(lane.Id);
                 warnings.Add((JsonNode?)JsonValue.Create("No playable MIDI could be recovered for " + lane.Name + "; preserved the section as existing music/silence and continued."));
                 output.Add((JsonNode)new JsonObject {
-                    ["laneId"]=lane.Id,
                     ["notation"]="",
                     ["originalBrief"]=string.IsNullOrEmpty(lane.OriginalBrief)?description:lane.OriginalBrief,
                     ["notes"]=JsonSerializer.SerializeToNode(new List<Note>(),ResoneJson.Default.ListNote)
@@ -277,56 +290,8 @@ HANDOFF DISCIPLINE: Read OPEN COMPOSER COMMITMENTS in the supplied full-song con
             }
         }
 
-        // Arrangement requests currently target exactly one lane. If the model gives us playable
-        // Resonator notation but forgets the track=<laneId> wrapper, keep the music instead of
-        // throwing the entire section away.
-        if (headers.Count == 0)
-        {
-            if (project.Lanes.Count == 1)
-                DecodeTrack(project.Lanes[0], text, $"Recovered {project.Lanes[0].Name}: missing track header; used the only requested lane.");
-            else
-                throw new ArgumentException("Begin each track with track=<requested laneId> followed by its notation; do not return JSON.");
-        }
-        else
-        {
-            for (int i=0;i<headers.Count;i++)
-            {
-                var header = headers[i];
-                string id=header.Groups["id"].Value;
-                int start=header.Index+header.Length;
-                int end=i+1<headers.Count?headers[i+1].Index:text.Length;
-                string rawNotation=text[start..end];
-                var lane=project.Lanes.SingleOrDefault(l=>l.Id==id);
+        DecodeTrack(project.Lanes[0], text);
 
-                if (lane == null && project.Lanes.Count == 1 && headers.Count == 1)
-                {
-                    lane = project.Lanes[0];
-                    DecodeTrack(lane, rawNotation, $"Recovered {lane.Name}: model returned track={id}; used requested laneId {lane.Id}.");
-                    continue;
-                }
-                if (lane == null || seen.Contains(id))
-                {
-                    warnings.Add((JsonNode?)JsonValue.Create("Ignored unknown or duplicate track wrapper: " + id));
-                    continue;
-                }
-                DecodeTrack(lane, rawNotation);
-            }
-        }
-
-        if (output.Count == 0 && allowEmptyTracks)
-        {
-            foreach (var lane in project.Lanes.Where(l=>!seen.Contains(l.Id)))
-            {
-                seen.Add(lane.Id);
-                warnings.Add((JsonNode?)JsonValue.Create("Composer output contained no usable track wrapper or playable MIDI for " + lane.Name + "; preserved existing music/silence and continued."));
-                output.Add((JsonNode)new JsonObject {
-                    ["laneId"]=lane.Id,
-                    ["notation"]="",
-                    ["originalBrief"]=string.IsNullOrEmpty(lane.OriginalBrief)?description:lane.OriginalBrief,
-                    ["notes"]=JsonSerializer.SerializeToNode(new List<Note>(),ResoneJson.Default.ListNote)
-                });
-            }
-        }
         if (warnings.Count > 0)
             ResoneDailyLog.WriteBlock("MIDI", "Arrangement recovery warnings", warnings.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         if (output.Count == 0)

@@ -28,21 +28,22 @@ const state={brief:'epic battle song',design:'Producer notes',tempo:120,meter:'4
  {id:'battle',title:'Battle',plan:'SECTION 2 [battle] — Battle\\nBars: 4',bars:4,startBar:4,memoryNotes:''}
 ]};
 receive({op:'songDesign',requestId:id,payload:{design:'Producer notes',state}});
+assert(song.bars===8,'producer-decided actual song length was not applied');
 assert(sent.at(-1).op==='songChunk'&&sent.at(-1).payload.sectionId==='intro'&&sent.at(-1).payload.laneId==='a','first section/lane not queued');
 assert(sent.at(-1).payload.project.lanes.length===2,'unchecked lane was submitted');
 id=pending.id;
-receive({op:'songChunk',requestId:id,payload:{tracks:[{laneId:'a',notation:'C4',notes:[{pitch:60,start:0,duration:1}]}],songState:state}});
+receive({op:'songChunk',requestId:id,payload:{tracks:[{notation:'C4',notes:[{pitch:60,start:0,duration:1}]}],songState:state}});
 assert(song.lanes[0].notes[0].start===0,'section 1 offset wrong');
 assert(sent.at(-1).op==='songChunk'&&sent.at(-1).payload.laneId==='b','second checked lane not queued');
 id=pending.id;
-receive({op:'songChunk',requestId:id,payload:{tracks:[{laneId:'b',notation:'C2',notes:[{pitch:36,start:1,duration:1}]}],songState:state}});
+receive({op:'songChunk',requestId:id,payload:{tracks:[{notation:'C2',notes:[{pitch:36,start:1,duration:1}]}],songState:state}});
 assert(sent.at(-1).op==='songChunk'&&sent.at(-1).payload.sectionId==='battle'&&sent.at(-1).payload.laneId==='a','section 2 did not begin');
 assert(sent.at(-1).payload.project.bars===4,'section project length wrong');
 id=pending.id;
-receive({op:'songChunk',requestId:id,payload:{tracks:[{laneId:'a',notation:'G4',notes:[{pitch:67,start:0,duration:1}]}],songState:state}});
+receive({op:'songChunk',requestId:id,payload:{tracks:[{notation:'G4',notes:[{pitch:67,start:0,duration:1}]}],songState:state}});
 assert(song.lanes[0].notes.some(n=>n.pitch===67&&n.start===16),'section 2 was not shifted to full-song position');
 id=pending.id;
-receive({op:'songChunk',requestId:id,payload:{tracks:[{laneId:'b',notation:'G2',notes:[{pitch:43,start:0,duration:1}]}],songState:state}});
+receive({op:'songChunk',requestId:id,payload:{tracks:[{notation:'G2',notes:[{pitch:43,start:0,duration:1}]}],songState:state}});
 assert(pending===null&&songRun===null,'song loop did not finish');
 assert(song.lanes[2].notes.length===0,'unchecked lane changed');
 assert(undo.length===1,'whole song should be one undo checkpoint');

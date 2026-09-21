@@ -7,7 +7,7 @@ internal sealed class BackgroundController(string root,string aiRoot,HttpClient 
  public event Action<string>? StatusChanged;
  private void Report(string message){StatusChanged?.Invoke(message);Console.WriteLine(message);}
  private readonly SemaphoreSlim gate=new(1,1);
- private Process? worker;private ServiceSupervisor? supervisor;private string secret="";private bool enabled=true;private int restarts;
+ private Process? worker;private ServiceSupervisor? supervisor;private string secret="";private bool enabled=true;private int restarts;private string? workerExecutableOverride;
  public void OpenUi(){
   var candidates=new[]{"wds.resone.ui.exe","Resone.exe","../ui/out/Resone.exe","build/ui/out/Resone.exe"}.Select(p=>Path.GetFullPath(Path.Combine(root,p)));
   var path=candidates.FirstOrDefault(File.Exists)??throw new FileNotFoundException("Standalone UI not found. Expected wds.resone.ui.exe beside the launcher or build/ui/out/Resone.exe.");
@@ -17,6 +17,17 @@ internal sealed class BackgroundController(string root,string aiRoot,HttpClient 
   if(!enabled)throw new InvalidOperationException("AI stack is off. Enable it from the Resone tray menu.");
   if(supervisor==null){supervisor=new(root,aiRoot,http,Report);if(!skipServices)await supervisor.StartAsync(token);}
   await supervisor.EnsureComponentAsync(component,token);
+ }finally{gate.Release();}}
+ public async Task<string> ReloadWorkerAsync(string executable,CancellationToken token){await gate.WaitAsync(token);try{
+  string full=Path.GetFullPath(executable);
+  if(!File.Exists(full))throw new FileNotFoundException("Updated Resone worker executable was not found.",full);
+  workerExecutableOverride=full;
+  if(!enabled)return secret;
+  Report("Updated Resone API/AI worker detected; reloading it without restarting the launcher.");
+  var old=worker;worker=null;
+  try{if(old is {HasExited:false})old.Kill(true);}catch{}old?.Dispose();
+  restarts=0;
+  return await StartLocked(token);
  }finally{gate.Release();}}
  public async Task<string> EnsureAsync(CancellationToken token){await gate.WaitAsync(token);try{
   if(restarts>3)throw new InvalidOperationException("Repeated native crashes. Toggle the AI stack off/on after correcting the runtime.");
@@ -41,7 +52,8 @@ internal sealed class BackgroundController(string root,string aiRoot,HttpClient 
   if(supervisor==null){supervisor=new(root,aiRoot,http,Report);try{if(!skipServices)await supervisor.StartAsync(token);}catch{supervisor.Dispose();supervisor=null;throw;}}
   string ready="resone-ready-"+Guid.NewGuid().ToString("N");
   using var pipe=new NamedPipeServerStream(ready,PipeDirection.In,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly);
-  var start=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,WorkingDirectory=root,CreateNoWindow=true};start.ArgumentList.Add("--worker");
+  string workerExecutable=ResolveWorkerExecutable();
+  var start=new ProcessStartInfo(workerExecutable){UseShellExecute=false,WorkingDirectory=root,CreateNoWindow=true};start.ArgumentList.Add("--worker");
   secret=Convert.ToHexString(RandomNumberGenerator.GetBytes(32));start.Environment["RESONE_HOME"]=root;start.Environment[Wds.Resone.Api.AiRuntimeRoot.EnvironmentVariable]=aiRoot;start.Environment["RESONE_READY_PIPE"]=ready;start.Environment["RESONE_SESSION_TOKEN"]=secret;start.Environment["RESONE_SELECTED_BACKEND"]=supervisor.SelectedBackend;
   var p=new Process{StartInfo=start,EnableRaisingEvents=true};p.Start();worker=p;
   try{
@@ -53,6 +65,11 @@ internal sealed class BackgroundController(string root,string aiRoot,HttpClient 
    if(p.HasExited)throw new InvalidOperationException("Resone worker exited during startup.");
    Report("Resone AI stack is ready.");return secret;
   }catch{worker=null;try{if(!p.HasExited)p.Kill(true);}catch{}p.Dispose();throw;}
+ }
+ private string ResolveWorkerExecutable(){
+  if(!string.IsNullOrWhiteSpace(workerExecutableOverride)&&File.Exists(workerExecutableOverride))return workerExecutableOverride;
+  workerExecutableOverride=null;
+  return Environment.ProcessPath??throw new InvalidOperationException("Launcher executable path is unavailable.");
  }
  private async Task RestartAfterExitAsync(Process exited){
   await gate.WaitAsync();try{

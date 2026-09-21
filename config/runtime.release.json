@@ -8,7 +8,7 @@
     "encryptInstructions": false
   },
   "logging": {
-    "directory": "logs",
+    "directory": "%LOCALAPPDATA%\\Wds\\Logs\\Resone",
     "retentionDays": 14
   },
   "updates": {

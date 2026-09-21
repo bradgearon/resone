@@ -50,11 +50,9 @@ The app archive must contain `config/runtime.json` with `updates.currentVersion`
 
 ## Logging
 
-All Resone processes append to the same plain-text daily file:
+All Resone processes append to the same plain-text daily file. The source development runtime uses `logging.directory: "logs"`, so a dev copy writes to `<active Resone root>\logs\resone-YYYY-MM-DD.log`. Release runtime manifests use `%LOCALAPPDATA%\Wds\Logs\Resone`, keeping installed logs outside the replaceable application tree.
 
-`%LOCALAPPDATA%\Wds\Logs\Resone\resone-YYYY-MM-DD.log`
-
-`runtime.json -> logging` can override the directory and retention period. There are no JSONL host logs or one-JSON-file-per-LLM-call logs anymore.
+`runtime.json -> logging` can override the directory and retention period. Relative directories are resolved against the active Resone app/install root. There are no JSONL host logs or one-JSON-file-per-LLM-call logs anymore.
 
 ## Publishing
 

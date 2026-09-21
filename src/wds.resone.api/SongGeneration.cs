@@ -64,7 +64,7 @@ public sealed class SongMusicalMemory
     public string SourceLane { get; set; } = "";
 }
 
-public sealed record SongGenerationContext(string SectionId, string Packet);
+public sealed record SongGenerationContext(string SectionId, string Packet, string DirectorPacket);
 
 /// <summary>
 /// Deterministically provisions the small amount of song context needed for a section/lane call.
@@ -79,6 +79,7 @@ public static class SongGenerationProvisioner
         if (string.IsNullOrWhiteSpace(design)) throw new ArgumentException("Producer notes are required.", nameof(design));
         var sections = ParseDesignedSections(design, targetBars);
         if (sections.Count == 0) throw new InvalidDataException("Producer notes did not contain a usable section list.");
+        int actualBars = sections.Sum(s => s.Bars);
         return new SongGenerationState
         {
             Brief = brief.Trim(),
@@ -87,7 +88,7 @@ public static class SongGenerationProvisioner
             ComposerDesign = (composerDesign ?? "").Trim(),
             Tempo = tempo,
             Meter = meter,
-            TargetBars = targetBars,
+            TargetBars = actualBars,
             Sections = sections,
             GenreId = genre?.PrimaryId ?? "",
             GenreParentId = genre?.ParentId ?? "",
@@ -194,6 +195,81 @@ public static class SongGenerationProvisioner
 
         b.AppendLine().AppendLine("CONTINUITY RULE")
             .AppendLine("Use the producer's current-section goal and remembered exact musical material. Do not regenerate earlier sections. Preserve recognizable musical DNA when a section is meant to recall, answer, or counter prior material. An answer develops the remembered statement; a counter deliberately contrasts or reframes it. In either case, anchor response notes to the source notes at corresponding remembered positions and use the Interval Emotion Field Guide's Continuation property to choose the relationship. Rhythm, articulation, spacing, density, and timing may vary to make the answer/counter feel alive rather than copied.");
+        return b.ToString().Trim();
+    }
+
+    public static string BuildDirectorPacket(SongGenerationState state, string sectionId, string laneName, bool drumLane)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        var section = FindSection(state, sectionId);
+        int currentIndex = Math.Max(0, state.Sections.FindIndex(s => string.Equals(s.Id, section.Id, StringComparison.OrdinalIgnoreCase)));
+        var b = new StringBuilder();
+        b.AppendLine("CURRENT SECTION SCOPE")
+            .AppendLine($"Plan ONLY this {section.Bars}-bar section. Every phrase/bar reference must stay within local bars 1-{section.Bars}. Do not plan earlier or later song sections.")
+            .AppendLine($"Original song request: {state.Brief}")
+            .AppendLine($"Song tempo/meter: {state.Tempo} BPM, {state.Meter}")
+            .AppendLine($"Current lane: {laneName}")
+            .AppendLine()
+            .AppendLine("CURRENT SECTION")
+            .AppendLine(section.Plan);
+
+        if (!string.IsNullOrWhiteSpace(state.GenreSongContext))
+        {
+            b.AppendLine()
+                .AppendLine("SELECTED SONG-DESIGN GENRE GUIDANCE")
+                .AppendLine(state.GenreSongContext);
+        }
+        else if (!string.IsNullOrWhiteSpace(state.GenreContext))
+        {
+            b.AppendLine()
+                .AppendLine("SELECTED GENRE GUIDANCE — LEGACY COMBINED CONTEXT")
+                .AppendLine(state.GenreContext);
+        }
+
+        if (drumLane && !string.IsNullOrWhiteSpace(state.GenreDrumContext))
+        {
+            b.AppendLine()
+                .AppendLine("SELECTED DRUM GENRE GUIDANCE — CURRENT LANE ONLY")
+                .AppendLine(state.GenreDrumContext);
+        }
+
+        if (!string.IsNullOrWhiteSpace(state.ComposerDesign))
+        {
+            b.AppendLine()
+                .AppendLine("GLOBAL COMPOSER DESIGN PASS — SHARED MUSICAL DNA")
+                .AppendLine(state.ComposerDesign);
+        }
+
+        var priorNotes = state.Sections
+            .Take(currentIndex + 1)
+            .Where(s => !string.IsNullOrWhiteSpace(s.MemoryNotes))
+            .ToList();
+        if (priorNotes.Count != 0)
+        {
+            b.AppendLine().AppendLine("RECENT SONG MEMORY NOTES");
+            foreach (var s in priorNotes)
+                b.AppendLine($"[{s.Id} — {s.Title}]\n{s.MemoryNotes}");
+        }
+
+        if (state.MusicalMemories.Count != 0)
+        {
+            b.AppendLine().AppendLine("EXACT MUSICAL MEMORY");
+            foreach (var m in state.MusicalMemories)
+            {
+                b.Append($"- [{m.Kind}] {m.Name}");
+                if (!string.IsNullOrWhiteSpace(m.Notation)) b.Append($" = `{m.Notation}`");
+                if (!string.IsNullOrWhiteSpace(m.Description)) b.Append($" — {m.Description}");
+                if (!string.IsNullOrWhiteSpace(m.SourceLane)) b.Append($" ({m.SourceLane})");
+                b.AppendLine();
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(state.PendingComposerNotes))
+        {
+            b.AppendLine().AppendLine("OPEN COMPOSER COMMITMENTS")
+                .AppendLine(state.PendingComposerNotes);
+        }
+
         return b.ToString().Trim();
     }
 

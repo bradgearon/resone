@@ -21,6 +21,22 @@ if(activationFileIndex>=0)
  catch(Exception e){Console.Error.WriteLine("Activation failed: "+e.Message);Environment.ExitCode=20;return;}
 }
 
+int reloadWorkerIndex=Array.IndexOf(args,"--reload-worker");
+if(reloadWorkerIndex>=0)
+{
+ if(reloadWorkerIndex+1>=args.Length)throw new ArgumentException("Missing worker executable path.");
+ string workerExecutable=Path.GetFullPath(args[reloadWorkerIndex+1]);
+ using var pipe=new NamedPipeClientStream(".",LauncherBootstrap.PipeName,PipeDirection.InOut,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly);
+ using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(30));
+ await pipe.ConnectAsync(stop.Token);
+ using var writer=new StreamWriter(pipe,new UTF8Encoding(false),1024,true){AutoFlush=true};
+ using var reader=new StreamReader(pipe,Encoding.UTF8,false,1024,true);
+ await writer.WriteLineAsync("reload-worker "+workerExecutable);
+ string? response=await reader.ReadLineAsync(stop.Token);
+ if(response is null || !response.StartsWith("ready",StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException(response??"Launcher did not acknowledge worker reload.");
+ return;
+}
+
 if(args.Contains("--worker")){await WorkerHost.RunAsync([]);return;}
 string root=ResoneRoot.Resolve();
 string aiRoot=AiRuntimeLocation.Configure(args);
@@ -64,6 +80,11 @@ using(var tray=new TrayIcon(()=>controller.OpenUi(),()=>controller.ToggleAsync()
    string? cmd=await reader.ReadLineAsync(request.Token);
    if(cmd=="open"){controller.OpenUi();await writer.WriteLineAsync("ok");}
    else if(cmd=="ensure"){string secret=await controller.EnsureAsync(request.Token);await writer.WriteLineAsync("ready "+secret);}
+   else if(cmd is not null && cmd.StartsWith("reload-worker ",StringComparison.OrdinalIgnoreCase)){
+    string executable=cmd["reload-worker ".Length..].Trim();
+    string secret=await controller.ReloadWorkerAsync(executable,request.Token);
+    await writer.WriteLineAsync("ready "+secret);
+   }
    else if(cmd is not null && cmd.StartsWith("ensure-component ",StringComparison.OrdinalIgnoreCase)){
     string component=cmd["ensure-component ".Length..].Trim();
     await controller.EnsureRuntimeComponentAsync(component,request.Token);

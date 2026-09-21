@@ -180,7 +180,7 @@ static void ConfigureLogging(LoggingPolicy policy, string installRoot)
 {
     if (string.IsNullOrWhiteSpace(policy.Directory)) return;
     string path = Environment.ExpandEnvironmentVariables(policy.Directory.Trim());
-    if (!Path.IsPathRooted(path)) path = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Wds", path));
+    if (!Path.IsPathRooted(path)) path = Path.GetFullPath(Path.Combine(installRoot, path));
     ResoneDailyLog.Configure(path);
 }
 

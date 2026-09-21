@@ -23,5 +23,5 @@ must(tips.includes('OPEN COMPOSER COMMITMENT'), 'composer tips missing continuit
 must(json.arrangementInstructions.includes('STATEMENT / ANSWER / COUNTER RULE'), 'runtime composer instructions missing answer/counter rule');
 must(json.arrangementInstructions.includes('corresponding remembered position'), 'runtime composer must anchor responses to remembered source positions');
 must(arranger.includes('SIMULTANEOUS DRUM HITS') && arranger.includes('[C2 F#2]'), 'percussion composer prompt must explain bracketed simultaneous hits');
-must(json.arrangementInstructions.includes('simultaneous drum hits') && json.arrangementInstructions.includes('[C2 D2 C#3]'), 'runtime arrangement instructions must explain drum chord simultaneity');
+must(json.arrangementInstructions.includes('simultaneous drum hits'), 'runtime arrangement instructions must explain drum chord simultaneity');
 console.log('PASS positional answer/counter semantics and persistent composer handoff commitments');

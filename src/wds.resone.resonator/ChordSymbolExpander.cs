@@ -5,7 +5,7 @@ public static partial class ChordSymbolExpander
 {
     [GeneratedRegex(@"^(?<root>[A-Ga-g](?:#|b)?)(?<quality>m11|maj7|m7|add9|sus2|sus4|dim|aug|m|7)?(?:/(?<bass>[A-Ga-g](?:#|b)?))?$")]
     private static partial Regex ChordRegex();
-    public static IReadOnlyList<int>? TryExpand(string symbol, int defaultOctave, int midiNoteForC0 = 12)
+    public static IReadOnlyList<int>? TryExpand(string symbol, int defaultOctave, int midiNoteForC0 = 24)
     {
         var match = ChordRegex().Match(symbol.Trim());
         if (!match.Success)

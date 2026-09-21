@@ -95,6 +95,7 @@ namespace Wds.Resone.Api.Music
                 _model,
                 request.Description,
                 _library.LoadIntervalEmotionGuide(),
+                _library.LoadResonatorNotationReference(),
                 request.UseAhd,
                 request.Bars,
                 request.Tempo,
@@ -107,9 +108,23 @@ namespace Wds.Resone.Api.Music
                 "",
                 "",
                 token).ConfigureAwait(false);
-            string composerRequest = MusicNarrativePlanner.AppendNarrativePlan(
-                JsonSerializer.Serialize(request, ResoneJson.Default.MusicCompositionRequest) + "\n" + BuildDurationInstruction(request),
-                narrative);
+            string requestText = $"""
+{request.Description.Trim()}
+Tempo: {request.Tempo}
+Meter: {request.Meter}
+Bars: {request.Bars}
+UseAhd: {request.UseAhd.ToString().ToLowerInvariant()}
+Instrument: Melody
+""";
+            if (!string.IsNullOrWhiteSpace(request.ExistingNotation))
+            {
+                requestText += "\nCURRENT SELECTED LANE MATERIAL";
+                if (!string.IsNullOrWhiteSpace(request.OriginalBrief))
+                    requestText += "\nOriginal brief: " + request.OriginalBrief.Trim();
+                requestText += "\nExisting Resonator notation:\n" + request.ExistingNotation.Trim();
+            }
+            requestText += "\n" + BuildDurationInstruction(request);
+            string composerRequest = MusicNarrativePlanner.AppendNarrativePlan(requestText, narrative);
             var messages = new List<ChatMessage>
             {
                 new ChatMessage("system", instructions.SystemPrompt + "\n" + instructions.References + "\nEXECUTABLE OUTPUT CONTRACT (overrides optional reference syntax):\n" + instructions.ExecutableProfile + "\nTIMING CONTRACT: | separators are optional visual markers. Ignore any earlier requirement to emit or fill explicit | delimited bars. Derive the timeline from event durations. Bars is a target length, not an exact output constraint. Prefer complete musical phrases. A shorter or longer valid melody is acceptable; playback preserves every note and fills an incomplete final measure with rests. Events may cross implied bar boundaries; / and // add no time."),

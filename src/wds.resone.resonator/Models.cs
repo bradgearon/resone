@@ -5,8 +5,8 @@ public sealed class ResonatorProfile
     public int DefaultTempo { get; set; } = 120;
     public int DefaultChannel { get; set; } = 0;
     public int DefaultVelocity { get; set; } = 96;
-    public int DefaultOctave { get; set; } = 4;
-    public int MidiNoteForC0 { get; set; } = 12;
+    public int DefaultOctave { get; set; } = 3;
+    public int MidiNoteForC0 { get; set; } = 24;
     public int PitchBendRangeSemitones { get; set; } = 2;
     public ArticulationDefaults ArticulationDefaults { get; set; } = new();
     public Dictionary<string, ArticulationDefinition> Articulations { get; set; } = new(StringComparer.OrdinalIgnoreCase);

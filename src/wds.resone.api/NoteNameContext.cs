@@ -11,7 +11,7 @@ public static class NoteNameContext
     public static string PitchName(int pitch)
     {
         if (pitch is < 0 or > 127) throw new ArgumentOutOfRangeException(nameof(pitch));
-        return Names[pitch % 12] + (pitch / 12 - 1).ToString(CultureInfo.InvariantCulture);
+        return Names[pitch % 12] + (pitch / 12 - 2).ToString(CultureInfo.InvariantCulture);
     }
 
     public static JsonArray Create(IEnumerable<Note> notes)

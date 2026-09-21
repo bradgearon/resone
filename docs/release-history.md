@@ -181,8 +181,9 @@ Changes:
 ## Unified logging
 
 - Replaced JSONL host trace, per-call LLM JSON files, startup-per-process logs, and `whisper-cpp.log` with one cross-process daily text log.
-- Default path: `%LOCALAPPDATA%\Wds\Logs\Resone\resone-YYYY-MM-DD.log`.
-- Runtime JSON controls log directory and retention.
+- Development `runtime.json` uses `logs`, resolved under the active source/runtime root, so local dev logs are easy to inspect beside the dev copy.
+- Release runtime manifests use `%LOCALAPPDATA%\Wds\Logs\Resone\resone-YYYY-MM-DD.log` so installed logs survive app replacement.
+- Runtime JSON controls log directory and retention; relative paths resolve against the active app/install root.
 
 ## 2026-09-19 — voice-source layout + interactive piano roll
 

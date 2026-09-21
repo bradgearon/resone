@@ -241,7 +241,7 @@ public sealed class ServiceSupervisor(string appRoot, string aiRoot, HttpClient 
         if (directory.Length > 0)
         {
             directory = Environment.ExpandEnvironmentVariables(directory);
-            if (!Path.IsPathRooted(directory)) directory = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Wds", directory));
+            if (!Path.IsPathRooted(directory)) directory = Path.GetFullPath(Path.Combine(appRoot, directory));
             ResoneDailyLog.Configure(directory);
         }
         PruneOldLogs(logging.RetentionDays);

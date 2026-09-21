@@ -18,12 +18,12 @@
   </aside>
   <section class="panel composer">
     <h2><span class="blue">✦ &nbsp; Tell Resone what to create</span><span id="connection" class="badge">Connecting</span></h2>
-    <div class="songIdentity"><span id="songTitle" class="songTitle" tabindex="0" title="Click to rename">Untitled Song</span><button id="songNotesToggle" class="iconOnly songNotesToggle" type="button" title="Show producer and composer notes" aria-label="Show producer and composer notes" aria-expanded="false"><svg viewBox="0 0 18 20" aria-hidden="true"><path d="M3.5 1.5h7l4 4v13h-11z"/><path d="M10.5 1.5v4h4M6 9h6M6 12h6M6 15h4.5"/></svg></button><button id="deleteSong" class="iconOnly dangerText" title="Delete this song">×</button></div>
-    <section id="songNotesPanel" class="songNotesPanel" aria-label="Piece producer and composer notes" hidden>
+    <div class="songIdentity"><span id="songTitle" class="songTitle" tabindex="0" title="Click to rename">Untitled Song</span><button id="songNotesToggle" class="iconOnly songNotesToggle" type="button" title="Show piece notes" aria-label="Show piece notes" aria-expanded="false"><svg viewBox="0 0 18 20" aria-hidden="true"><path d="M3.5 1.5h7l4 4v13h-11z"/><path d="M10.5 1.5v4h4M6 9h6M6 12h6M6 15h4.5"/></svg></button><button id="deleteSong" class="iconOnly dangerText" title="Delete this song">×</button></div>
+    <section id="songNotesPanel" class="songNotesPanel" aria-label="Piece notes" hidden>
       <div class="songNotesHeader"><strong>Piece notes</strong><small id="songNotesMeta">No song notes yet</small></div>
       <div class="songNotesGrid">
-        <section class="songNoteCard"><h3>Producer notes</h3><pre id="producerNotesText">No producer notes yet.</pre></section>
-        <section class="songNoteCard"><h3>Composer notes</h3><pre id="composerNotesText">No composer notes yet.</pre></section>
+        <section id="producerNotesCard" class="songNoteCard"><h3>Producer notes</h3><pre id="producerNotesText">No producer notes yet.</pre></section>
+        <section id="composerNotesCard" class="songNoteCard"><h3 id="composerNotesTitle">Composer notes</h3><pre id="composerNotesText">No composer notes yet.</pre></section>
       </div>
     </section>
     <div class="prompt"><textarea id="brief" placeholder="A tender beginning, a little hope, then something epic…" aria-label="Music description"></textarea><button id="send" class="send" title="Create music">➜</button></div>

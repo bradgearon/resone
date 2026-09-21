@@ -15,6 +15,7 @@ public sealed class InstructionLibrary(string root)
 {
     public MusicCompositionInstructions LoadMusicCompositionInstructions() => MusicCompositionInstructions.Load(root);
     public string LoadIntervalEmotionGuide() => InstructionContent.Read(root, "interval_emotion_field_guide.md");
+    public string LoadResonatorNotationReference() => InstructionContent.Read(root, "resonator_api_v0.1.md");
 }
 
 /// <summary>Scoped extraction of the Six Stars OpenAI SSE flow. Ignores reasoning deltas.</summary>

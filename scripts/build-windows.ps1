@@ -229,9 +229,9 @@ Run dotnet (@('publish',"$Root/src/wds.resone.api/wds.resone.api.csproj",'-c','R
 
 $LauncherOutputDir = "$Root/build/launcher"
 $LauncherPrimaryDir = $LauncherOutputDir
-$LauncherNextDir = "$Root/build/launcher-next"
 $LauncherExe = Join-Path $LauncherPrimaryDir 'wds.resone.launcher.exe'
 $LauncherFingerprint = Get-LauncherSourceFingerprint
+$LauncherWorkerDir = Join-Path "$Root/build/launcher-workers" $LauncherFingerprint.Substring(0,16)
 $LauncherTargetLocked = $false
 $LauncherTargetFullPath = [System.IO.Path]::GetFullPath($LauncherExe)
 foreach ($Process in $RunningLauncher) {
@@ -244,7 +244,7 @@ foreach ($Process in $RunningLauncher) {
 $SkipLauncherPublish = $false
 if ($RunningLauncher.Count -gt 0 -and !$CustomerRelease -and !$LocalInstallerTest) {
   $LauncherCandidates = @($LauncherPrimaryDir)
-  if ($LauncherTargetLocked) { $LauncherCandidates += $LauncherNextDir }
+  if ($LauncherTargetLocked) { $LauncherCandidates += $LauncherWorkerDir }
   foreach ($Candidate in $LauncherCandidates) {
     $CandidateExe = Join-Path $Candidate 'wds.resone.launcher.exe'
     $CandidateFingerprint = Join-Path $Candidate '.source-fingerprint'
@@ -260,13 +260,13 @@ if ($RunningLauncher.Count -gt 0 -and !$CustomerRelease -and !$LocalInstallerTes
 }
 
 if ($SkipLauncherPublish) {
-  Write-Host "Resone launcher is already running and the current launcher build matches its managed sources; skipping launcher publish ($LauncherOutputDir)." -ForegroundColor Cyan
+  Write-Host "The current launcher/API build already exists; skipping launcher publish ($LauncherOutputDir)." -ForegroundColor Cyan
 }
 else {
   if ($LauncherTargetLocked) {
-    $LauncherOutputDir = $LauncherNextDir
-    if (Test-Path $LauncherOutputDir) { Remove-Item $LauncherOutputDir -Recurse -Force }
-    Write-Host 'The running launcher is using build\launcher. Publishing the changed launcher to build\launcher-next instead.' -ForegroundColor Yellow
+    $LauncherOutputDir = $LauncherWorkerDir
+    New-Item -ItemType Directory -Force $LauncherOutputDir | Out-Null
+    Write-Host "The tray launcher is staying resident. Publishing the changed API/worker to $LauncherOutputDir." -ForegroundColor Yellow
   }
   Run dotnet (@('publish',"$Root/src/wds.resone.launcher/wds.resone.launcher.csproj",'-c','Release','-r','win-x64','--self-contained','true','-o',$LauncherOutputDir) + $PublishFlags)
   Set-Content (Join-Path $LauncherOutputDir '.source-fingerprint') $LauncherFingerprint -Encoding ASCII
@@ -317,7 +317,12 @@ Copy-Item $VocalDll "$LauncherOutputDir/wds.resone.vocals.dll" -Force
 Copy-Item $VocalDll "$Root/build/api/wds.resone.vocals.dll" -Force
 
 if (!$DeployInstall) {
-  Write-Host "Build complete. Live launcher was left running; install directory was not modified." -ForegroundColor Green
+  if ($LauncherTargetLocked) {
+    $ReloadWorkerExe = Join-Path $LauncherOutputDir 'wds.resone.launcher.exe'
+    Write-Host "Reloading the API/AI worker from $ReloadWorkerExe while leaving the tray launcher running..." -ForegroundColor Cyan
+    Run $ReloadWorkerExe @('--reload-worker',$ReloadWorkerExe)
+  }
+  Write-Host "Build complete. Live tray launcher stayed running; the API/AI worker was refreshed from the current build." -ForegroundColor Green
   Write-Host "Build outputs: $LauncherOutputDir, $Root/build/updater, $Root/build/api, $Root/build/ui" -ForegroundColor Cyan
   exit 0
 }

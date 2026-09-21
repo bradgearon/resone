@@ -20,7 +20,7 @@ with sync_playwright() as p:
     assert page.locator('.lane').count()==6
     page.fill('#brief','Tender, hopeful, then epic')
     page.click('#send');request=page.evaluate('sent.at(-1)');assert request['op']=='compose'
-    event('composition',{'tracks':[{'laneId':l['id'],'notation':'tempo=120 4/4 C4 E4 G4 C5','originalBrief':'Tender','notes':[{'start':i,'duration':1,'pitch':n,'velocity':96} for i,n in enumerate([60,64,67,72])]} for l in request['payload']['project']['lanes']], 'bars':1},request['requestId'])
+    event('composition',{'tracks':[{'notation':'tempo=120 4/4 C4 E4 G4 C5','originalBrief':'Tender','notes':[{'start':i,'duration':1,'pitch':n,'velocity':96} for i,n in enumerate([60,64,67,72])]}], 'bars':1},request['requestId'])
     assert page.locator('.note').count()==24
     assert page.evaluate('sent.at(-1).op')=='play'
     page.click('#voice');voice=page.evaluate('sent.at(-1)');assert voice['op']=='voiceStart'

@@ -14,11 +14,11 @@ must(forge.includes('SongComposerDesignPass.CreateAsync') && forge.includes('com
 must(gen.includes('public string ComposerDesign') && gen.includes('GLOBAL COMPOSER DESIGN PASS — SHARED MUSICAL DNA FOR EVERY TRACK'),'composer design is not persisted/passed to every track');
 must(pass.includes('Emotional note palette:') && pass.includes('Melody seed:') && pass.includes('Chord progression:'),'design contract missing core musical material');
 must(pass.includes('Response variants (1-3 total):'),'design contract missing combined response variants section');
-must(pass.includes('at most THREE response variants TOTAL across Answers, Contrasts, and Continuations combined'),'design must make only 1-3 response variants total');
+must(pass.includes('Produce 1-3 response variants across Answers, Contrasts, and Continuations combined.'),'design must make only 1-3 response variants total');
 must(pass.includes('DefaultMelodyCenterOctave = 3') && pass.includes('DefaultMelodyMaxOctave = 5'),'design register defaults missing');
 must(pass.includes('Anchored Harmonic Divergence is always part of your compositional vocabulary'),'AHD out-of-key permission missing');
-must(pass.includes('Continuation property'),'composer continuation rule not reused');
-must(pass.includes('instructions.ArrangementInstructions') && pass.includes('composition-tips.md'),'design pass does not use composer instructions');
+must(pass.includes('Build chords and motifs around the impactual notes from intervals used in the piece.'),'composer design impactual-note rule missing');
+must(!pass.includes('instructions.ArrangementInstructions') && !pass.includes('instructions.SystemPrompt') && pass.includes('composition-tips.md'),'design pass must not receive lane-composer instructions');
 console.log('PASS optional saved global Composer Design Pass: emotional note palette, key/AHD plan, Resonator melody/motifs/chords and 1-3 response variants shared to every lane');
 must(ui.includes('composerOverview :') && ui.includes('workspaceComposerOverview'), 'future song requests must carry the saved composer overview');
 must(ui.includes('workspaceComposerOverview=p.composerDesign'), 'composer overview is not retained after song generation');

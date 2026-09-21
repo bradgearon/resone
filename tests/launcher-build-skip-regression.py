@@ -14,6 +14,7 @@ assert "Get-Process -Name 'wds.resone.launcher'" in build
 assert '$SkipLauncherPublish' in build
 assert 'skipping launcher publish' in build
 assert "src/wds.resone.api" in build, 'API source must invalidate AOT launcher publish because it is a ProjectReference'
-assert "launcher-next" in build, 'changed launcher should still build safely when build/launcher itself is running'
+assert "launcher-workers" in build, 'changed launcher/API should publish to a versioned worker slot while build/launcher itself is running'
+assert "--reload-worker" in build, 'live builds should tell the resident tray launcher to reload only its API/AI worker'
 assert '$LauncherOutputDir/wds.resone.launcher.exe' in build
 print('launcher compile + live skip regression: PASS')

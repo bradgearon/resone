@@ -13,4 +13,7 @@ assert not missing, f'app.js references missing DOM ids: {missing}'
 assert 'id="rollContent"' in html
 assert "send('ready')" in app
 assert 'reportUiFault' in app
+assert 'id="directorNotesText"' not in html, 'director output should reuse the existing notes card rather than add a third Director card'
+assert 'id="composerNotesTitle"' in html
+assert "workspaceDirectorOutput" in app
 print(f'UI DOM contract OK: {len(refs)} referenced ids are present.')
