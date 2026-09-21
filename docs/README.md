@@ -1,5 +1,13 @@
 # Resone documentation
 
+Resone takes input and does composes or alters midi. You can drag and drop midi in. It uses a local gemma llm and qwen for tts and whisper for asr. The launcher hosts these and auto runs when you launch the app or vst.
+
+More about it on the itch.io page.
+
+https://www.youtube.com/watch?v=QgrTdx8BhL8
+
+https://img.itch.zone/aW1hZ2UvNTAyOTM1OC8zMDExMjE3NS5wbmc=/original/K8u%2F%2Bf.png
+
 Project documentation is intentionally kept in one flat `docs/` folder.
 
 - [Architecture overview](architecture-overview.md) — native/UI/API structure and reuse provenance.
